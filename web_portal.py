@@ -1,3 +1,6 @@
+INDEX_HTML = """
+...
+"""
 ==== web_portal.py ============================================================
 <input type="file" name="mapping" id="mapping" accept=".csv,.xlsx,.xls" required />
 <label>Timeout (s) <input type="number" step="0.1" min="0.1" name="timeout" value="3.0"></label>
