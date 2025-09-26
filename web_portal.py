@@ -1,4 +1,4 @@
-# web_portal.py  — Form Mode (no uploads). Per-row IP/Unit + Notes. Read/Write All.
+# web_portal.py — Form Mode UI with standard Modbus reference defaults and 0-based normalization.
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,38 +21,43 @@ INDEX_HTML = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Modbus TCP Portal (Form)</title>
+  <title>Team 1 High Specification Smart UPS - UL/Braeden</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; line-height: 1.35; }
-    header { margin-bottom: 16px; }
-    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin: 12px 0; }
-    .section { margin-top: 18px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; line-height: 1.35; }
+    header { margin-bottom: 12px; }
+    h2 { margin: 0 0 4px 0; padding: 6px 10px; background:#e8e6ff; border-radius:10px; display:inline-block; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin: 10px 0; }
+    .section { margin-top: 12px; }
     label { display: inline-flex; gap: 6px; align-items: center; }
-    input, select, button { font-size: 14px; padding: 4px 6px; }
+    input, select, button { font-size: 14px; padding: 3px 6px; }
     input[type="number"] { width: 7em; }
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
-    th, td { border: 1px solid #eee; padding: 6px 8px; font-size: 13px; vertical-align: top; }
+    table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+    th, td { border: 1px solid #eee; padding: 4px 6px; font-size: 13px; vertical-align: top; }
     th { background: #fafafa; text-align: left; }
     .ok { color: #0a7a2f; font-weight: 600; }
     .err { color: #b00020; font-weight: 600; }
-    .muted { color: #888; font-size: 12px; }
-    .tabbar { display:flex; gap: 8px; margin: 8px 0; }
+    .muted { color: #666; font-size: 12px; }
+    .tabbar { display:flex; gap: 8px; margin: 6px 0; }
     .tabbar button { padding: 6px 10px; border-radius: 8px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer; }
     .tabbar button.active { background: #e8f0ff; border-color: #7aa2ff; }
     .hidden { display:none; }
     .gridnum { width: 5em; }
     .valuecell { min-width: 8em; }
-    .ipcell { min-width: 11em; }
-    .unitcell { min-width: 5em; }
-    .notescell { min-width: 12em; }
+    .ipcell { min-width: 10em; }
+    .unitcell { width: 4.5em; }
+    .notescell { min-width: 48em; } /* ~4x previous (12em) */
   </style>
 </head>
 <body>
   <header>
-    <h2>Modbus TCP Portal – No Upload (Form Mode)</h2>
-    <div class="muted">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>. Addresses are <b>0-based</b>.</div>
+    <h2>Team 1 High Specification Smart UPS - UL/Braeden</h2>
+    <div class="muted">
+      Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>.<br/>
+      You may enter classic Modbus reference numbers (Coils 1-…, Discrete 10001-…, Input 30001-…, Holding 40001-…). 
+      The portal automatically normalizes to <b>0-based</b> before sending to the device.
+    </div>
   </header>
 
   <div class="card">
@@ -77,7 +82,7 @@ INDEX_HTML = r"""
     <div id="tab-coils" class="section">
       <div class="row">
         <label>Rows <input class="gridnum" id="coils-rows" type="number" min="1" value="8" /></label>
-        <label>Base address <input class="gridnum" id="coils-base" type="number" min="0" value="0" /></label>
+        <label>Base address <input class="gridnum" id="coils-base" type="number" min="0" value="1" /></label>
         <label>Mode
           <select id="coils-mode">
             <option value="read_coils">Read Coils</option>
@@ -95,7 +100,7 @@ INDEX_HTML = r"""
     <div id="tab-discrete" class="section hidden">
       <div class="row">
         <label>Rows <input class="gridnum" id="discrete-rows" type="number" min="1" value="8" /></label>
-        <label>Base address <input class="gridnum" id="discrete-base" type="number" min="0" value="0" /></label>
+        <label>Base address <input class="gridnum" id="discrete-base" type="number" min="0" value="10001" /></label>
         <button id="discrete-build">Build Table</button>
       </div>
       <table id="discrete-table"></table>
@@ -106,7 +111,7 @@ INDEX_HTML = r"""
     <div id="tab-holding" class="section hidden">
       <div class="row">
         <label>Rows <input class="gridnum" id="holding-rows" type="number" min="1" value="4" /></label>
-        <label>Base address <input class="gridnum" id="holding-base" type="number" min="0" value="0" /></label>
+        <label>Base address <input class="gridnum" id="holding-base" type="number" min="0" value="40001" /></label>
         <label>Mode
           <select id="holding-mode">
             <option value="read_holding">Read Holding</option>
@@ -138,7 +143,7 @@ INDEX_HTML = r"""
     <div id="tab-input" class="section hidden">
       <div class="row">
         <label>Rows <input class="gridnum" id="input-rows" type="number" min="1" value="4" /></label>
-        <label>Base address <input class="gridnum" id="input-base" type="number" min="0" value="0" /></label>
+        <label>Base address <input class="gridnum" id="input-base" type="number" min="0" value="30001" /></label>
         <label>Datatype
           <select id="input-dt">
             <option>int16</option>
@@ -188,10 +193,6 @@ INDEX_HTML = r"""
 
     const escCsv = s => '"' + String(s ?? '').replace(/"/g,'""') + '"';
     const escHtml = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-    function buildTable(table, base, rows, includeValue, includeDatatypeNotes=False) {
-      // JS is case-sensitive; but okay—it’s just a label. Keep as 'includeDatatypeNotes'.
-    }
 
     function buildTable(table, base, rows, includeValue, includeDatatypeNotes=false) {
       table.innerHTML = '';
@@ -281,7 +282,18 @@ INDEX_HTML = r"""
       return rows;
     }
 
-    function buildOps(which) {
+    // Normalize entered "reference" address to 0-based for each table
+    function refToZeroBased(kind, addr) {
+      if (addr === '' || isNaN(addr)) return addr;
+      const a = Number(addr);
+      if (kind === 'coils')    return (a >= 1)     ? (a - 1)     : a;
+      if (kind === 'discrete') return (a >= 10001) ? (a - 10001) : a;
+      if (kind === 'input')    return (a >= 30001) ? (a - 30001) : a;
+      if (kind === 'holding')  return (a >= 40001) ? (a - 40001) : a;
+      return a;
+    }
+
+    function buildOps(which) { // which: 'read' | 'write'
       const def_ip = document.getElementById('ip').value.trim();
       const def_unit = Number(document.getElementById('unit_id').value);
       const timeout = Number(document.getElementById('timeout').value);
@@ -293,13 +305,14 @@ INDEX_HTML = r"""
       const coilsMode = document.getElementById('coils-mode').value;
       rowsFromTable(document.getElementById('coils-table')).forEach(r => {
         if (r.address === '') return;
+        const addr0 = refToZeroBased('coils', r.address);
         const isWrite = (coilsMode !== 'read_coils');
         if ((which === 'read' && isWrite) || (which === 'write' && !isWrite)) return;
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
           device: "COILS", ip, unit_id: unit,
-          function: coilsMode, address: r.address, count: 1,
+          function: coilsMode, address: addr0, count: 1,
           datatype: "bool", rw: isWrite ? "W":"R", scale: 1.0, endianness: "",
           value: isWrite ? (coilsMode==='write_single' ? (r.value||'0').trim() : (r.value||'').trim()) : "",
           notes: r.notes || ""
@@ -309,11 +322,12 @@ INDEX_HTML = r"""
       // Discrete (read only)
       rowsFromTable(document.getElementById('discrete-table')).forEach(r => {
         if (r.address === '' || which === 'write') return;
+        const addr0 = refToZeroBased('discrete', r.address);
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
           device: "DISCRETE", ip, unit_id: unit,
-          function: "read_discrete", address: r.address, count: 1,
+          function: "read_discrete", address: addr0, count: 1,
           datatype: "bool", rw: "R", scale: 1.0, endianness: "",
           value: "", notes: r.notes || ""
         });
@@ -329,11 +343,12 @@ INDEX_HTML = r"""
       rowsFromTable(document.getElementById('holding-table')).forEach(r => {
         if (r.address === '') return;
         if ((which === 'read' && hIsWrite) || (which === 'write' && !hIsWrite)) return;
+        const addr0 = refToZeroBased('holding', r.address);
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
           device: "HOLDING", ip, unit_id: unit,
-          function: hMode, address: r.address, count: hCount,
+          function: hMode, address: addr0, count: hCount,
           datatype: hDT, rw: hIsWrite ? "W":"R", scale: hScale, endianness: hEnd,
           value: hIsWrite ? (r.value||'').trim() : "", notes: r.notes || ""
         });
@@ -346,11 +361,12 @@ INDEX_HTML = r"""
       const iCount = (iDT==="int32"||iDT==="float32") ? 2 : 1;
       rowsFromTable(document.getElementById('input-table')).forEach(r => {
         if (r.address === '' || which === 'write') return;
+        const addr0 = refToZeroBased('input', r.address);
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
           device: "INPUT", ip, unit_id: unit,
-          function: "read_input", address: r.address, count: iCount,
+          function: "read_input", address: addr0, count: iCount,
           datatype: iDT, rw: "R", scale: iScale, endianness: iEnd,
           value: "", notes: r.notes || ""
         });
