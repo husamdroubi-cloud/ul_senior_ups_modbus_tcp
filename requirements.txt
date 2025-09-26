@@ -1,3 +1,6 @@
 pymodbus==3.*
 pandas
 openpyxl
+fastapi
+uvicorn
+python-multipart

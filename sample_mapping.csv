@@ -1,0 +1,8 @@
+device,ip,unit_id,function,address,count,datatype,rw,scale,endianness,value
+# READ EXAMPLES
+UPS1,127.0.0.1,1,read_holding,0,2,float32,R,1.0,CDAB,
+UPS1,127.0.0.1,1,read_input,10,1,int16,R,1.0,ABCD,
+UPS1,127.0.0.1,1,read_coils,0,8,bool,R,1.0,,
+# WRITE EXAMPLES
+UPS1,127.0.0.1,1,write_single,20,1,int16,W,1.0,,123
+UPS1,127.0.0.1,1,write_multi,30,3,int16,W,1.0,,100,101,102
