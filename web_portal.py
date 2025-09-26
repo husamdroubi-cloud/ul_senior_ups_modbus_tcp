@@ -1,12 +1,12 @@
 # web_portal.py
 # Minimal HTTP portal for running the Modbus mapping from a browser.
 #
-# Run locally:
+# Run:
 #   python -m uvicorn web_portal:app --reload --port 8000
 #
 # Requires:
 #   pip install fastapi uvicorn python-multipart
-#   (and your existing requirements.txt for pandas/openpyxl/pymodbus)
+#   (plus your requirements.txt: pandas, openpyxl, pymodbus)
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
@@ -16,7 +16,7 @@ from typing import List, Dict, Any, Tuple
 
 # Reuse core logic from the CLI file in the same folder
 from pymodbus.client import ModbusTcpClient
-from modbus_portal_cli import load_rows, perform_row  # save_results not needed here
+from modbus_portal_cli import load_rows, perform_row
 
 app = FastAPI(title="Ultra-simple Modbus TCP Portal")
 app.add_middleware(
@@ -26,7 +26,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-INDEX_HTML = """
+# Use a raw triple-quoted string; JS builds DOM with createElement (no join('') anywhere)
+INDEX_HTML = r"""
 <!doctype html>
 <html>
 <head>
@@ -65,7 +66,7 @@ INDEX_HTML = """
         <a id="download" href="#" download="results.csv" style="display:none">Download results.csv</a>
       </div>
       <div class="hint" style="margin-top:6px">
-        Columns (case-insensitive): <code>device, ip, unit_id, function, address, count, datatype, rw, value, scale, endianness</code>
+        Columns: <code>device, ip, unit_id, function, address, count, datatype, rw, value, scale, endianness</code>
       </div>
     </form>
   </div>
@@ -74,81 +75,106 @@ INDEX_HTML = """
   <div id="results" class="card" style="display:none"></div>
 
   <script>
-  const form = document.getElementById('runForm');
-  const resultsDiv = document.getElementById('results');
-  const statusDiv = document.getElementById('status');
-  const downloadLink = document.getElementById('download');
+  (function () {
+    const form = document.getElementById('runForm');
+    const resultsDiv = document.getElementById('results');
+    const statusDiv = document.getElementById('status');
+    const downloadLink = document.getElementById('download');
 
-  function escHtml(x) {
-    return String(x ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;');
-  }
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    const file = document.getElementById('mapping').files[0];
-    if (!file) {
-      alert('Please choose a mapping file first.');
-      return;
+    function escCsv(s) {
+      const str = String(s ?? '');
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    function escHtml(s) {
+      return String(s ?? '')
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;');
     }
 
-    resultsDiv.style.display = 'block';
-    resultsDiv.textContent = 'Running...';
-    statusDiv.textContent = '';
-    downloadLink.style.display = 'none';
+    function buildTable(container, columns, rows) {
+      container.innerHTML = '';
+      const h3 = document.createElement('h3');
+      h3.textContent = 'Results';
+      container.appendChild(h3);
 
-    const fd = new FormData(form);
-    try {
-      const resp = await fetch('/run', { method: 'POST', body: fd });
-      if (!resp.ok) {
-        const t = await resp.text();
-        throw new Error(t || ('HTTP ' + resp.status));
-      }
-      const data = await resp.json();
+      const meta = document.createElement('div');
+      meta.className = 'muted';
+      meta.textContent = 'Rows: ' + rows.length;
+      container.appendChild(meta);
 
-      const cols = data.columns || [];
-      const rows = data.rows || [];
+      const wrapper = document.createElement('div');
+      wrapper.style.maxHeight = '60vh';
+      wrapper.style.overflow = 'auto';
 
-      // Build HTML table
-      let html = '<h3>Results</h3>';
-      html += '<div class="muted">Rows: ' + rows.length + '</div>';
-      html += '<div style="max-height: 60vh; overflow:auto;">';
-      html += '<table><thead><tr>' + cols.map(c => '<th>' + escHtml(c) + '</th>').join('') + '</tr></thead><tbody>';
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      columns.forEach(c => {
+        const th = document.createElement('th');
+        th.textContent = c;
+        trh.appendChild(th);
+      });
+      thead.appendChild(trh);
+      table.appendChild(thead);
 
-      for (const r of rows) {
-        html += '<tr>' + cols.map(c => {
+      const tbody = document.createElement('tbody');
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        columns.forEach(c => {
+          const td = document.createElement('td');
           const v = r[c];
-          const isOkCol = (c.toLowerCase() === 'ok');
-          const cls = isOkCol ? (v ? 'ok' : 'err') : '';
-          const text = (typeof v === 'object') ? escHtml(JSON.stringify(v)) : escHtml(v);
-          return '<td class="' + cls + '">' + text + '</td>';
-        }).join('') + '</tr>';
-      }
-      html += '</tbody></table></div>';
-      resultsDiv.innerHTML = html;
-
-      // Build CSV client-side and expose a download link
-      const escCsv = (s) => '"' + String(s ?? '').replaceAll('"','""') + '"';
-      const header = cols.map(escCsv).join(',');
-      const body = rows.map(row => cols.map(c => {
-        const v = row[c];
-        return escCsv(typeof v === 'object' ? JSON.stringify(v) : (v ?? ''));
-      }).join(',')).join('\\n');
-      const csv = header + '\\n' + body;
-      const blob = new Blob([csv], {type: 'text/csv'});
-      const url = URL.createObjectURL(blob);
-      downloadLink.href = url;
-      downloadLink.style.display = 'inline-block';
-
-      statusDiv.textContent = 'Done.';
-    } catch (err) {
-      resultsDiv.textContent = '';
-      statusDiv.textContent = 'Error: ' + (err?.message || err);
+          const isOkCol = c.toLowerCase() === 'ok';
+          if (isOkCol) td.className = v ? 'ok' : 'err';
+          td.innerHTML = escHtml(typeof v === 'object' ? JSON.stringify(v) : v);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrapper.appendChild(table);
+      container.appendChild(wrapper);
     }
-  });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const file = document.getElementById('mapping').files[0];
+      if (!file) { alert('Please choose a mapping file first.'); return; }
+
+      resultsDiv.style.display = 'block';
+      resultsDiv.textContent = 'Running...';
+      statusDiv.textContent = '';
+      downloadLink.style.display = 'none';
+
+      const fd = new FormData(form);
+      try {
+        const resp = await fetch('/run', { method: 'POST', body: fd });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const cols = data.columns || [];
+        const rows = data.rows || [];
+
+        buildTable(resultsDiv, cols, rows);
+
+        // Build CSV
+        const header = cols.map(escCsv).join(',');
+        const body = rows.map(row => cols.map(c => {
+          const v = row[c];
+          return escCsv(typeof v === 'object' ? JSON.stringify(v) : (v ?? ''));
+        }).join(',')).join('\n');
+        const csv = header + '\n' + body;
+        const blob = new Blob([csv], {type: 'text/csv'});
+        const url = URL.createObjectURL(blob);
+        downloadLink.href = url;
+        downloadLink.style.display = 'inline-block';
+
+        statusDiv.textContent = 'Done.';
+      } catch (err) {
+        resultsDiv.textContent = '';
+        statusDiv.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
+      }
+    });
+  })();
   </script>
 </body>
 </html>
