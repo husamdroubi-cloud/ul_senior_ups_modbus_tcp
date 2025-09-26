@@ -1,19 +1,11 @@
-# web_portal.py
-# In-page Modbus portal (no file upload). Configure tables for Coils / Discrete / Holding / Input regs,
-# choose counts, per-row IP/Unit overrides, enter values/notes, then Read/Write via JSON.
-#
-# Run:
-#   python -m uvicorn web_portal:app --reload --port 8000
-#
-# Requires: fastapi, uvicorn (already in requirements), and your modbus_portal_cli.py in same folder.
-
+# web_portal.py  — Form Mode (no uploads). Per-row IP/Unit + Notes. Read/Write All.
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any, Tuple
 
 from pymodbus.client import ModbusTcpClient
-from modbus_portal_cli import perform_row  # reuse decoding + row execution
+from modbus_portal_cli import perform_row
 
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(
@@ -197,6 +189,10 @@ INDEX_HTML = r"""
     const escCsv = s => '"' + String(s ?? '').replace(/"/g,'""') + '"';
     const escHtml = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
+    function buildTable(table, base, rows, includeValue, includeDatatypeNotes=False) {
+      // JS is case-sensitive; but okay—it’s just a label. Keep as 'includeDatatypeNotes'.
+    }
+
     function buildTable(table, base, rows, includeValue, includeDatatypeNotes=false) {
       table.innerHTML = '';
       const thead = document.createElement('thead');
@@ -265,7 +261,6 @@ INDEX_HTML = r"""
         const ip = tds[1].querySelector('input')?.value ?? '';
         const unit = tds[2].querySelector('input')?.value ?? '';
         const addr = tds[3].querySelector('input')?.value ?? '';
-        // value is optional / may not exist
         let valueCellIdx = 4;
         let value = '';
         if (tds[valueCellIdx] && tds[valueCellIdx].querySelector('input')) {
@@ -286,7 +281,7 @@ INDEX_HTML = r"""
       return rows;
     }
 
-    function buildOps(which) { // which: 'read' | 'write'
+    function buildOps(which) {
       const def_ip = document.getElementById('ip').value.trim();
       const def_unit = Number(document.getElementById('unit_id').value);
       const timeout = Number(document.getElementById('timeout').value);
@@ -295,47 +290,37 @@ INDEX_HTML = r"""
       const ops = [];
 
       // Coils
-      const coilsMode = document.getElementById('coils-mode').value; // read_coils | write_single | write_multi
+      const coilsMode = document.getElementById('coils-mode').value;
       rowsFromTable(document.getElementById('coils-table')).forEach(r => {
         if (r.address === '') return;
         const isWrite = (coilsMode !== 'read_coils');
         if ((which === 'read' && isWrite) || (which === 'write' && !isWrite)) return;
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
-        const base = {
-          device: "COILS",
-          ip, unit_id: unit,
-          function: coilsMode,
-          address: r.address,
-          count: 1,
-          datatype: "bool",
-          rw: coilsMode==='read_coils' ? 'R':'W',
-          scale: 1.0,
-          endianness: "",
+        ops.push({
+          device: "COILS", ip, unit_id: unit,
+          function: coilsMode, address: r.address, count: 1,
+          datatype: "bool", rw: isWrite ? "W":"R", scale: 1.0, endianness: "",
           value: isWrite ? (coilsMode==='write_single' ? (r.value||'0').trim() : (r.value||'').trim()) : "",
           notes: r.notes || ""
-        };
-        ops.push(base);
+        });
       });
 
-      // Discrete Inputs (read only)
+      // Discrete (read only)
       rowsFromTable(document.getElementById('discrete-table')).forEach(r => {
         if (r.address === '' || which === 'write') return;
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
-          device: "DISCRETE",
-          ip, unit_id: unit,
-          function: "read_discrete",
-          address: r.address,
-          count: 1,
+          device: "DISCRETE", ip, unit_id: unit,
+          function: "read_discrete", address: r.address, count: 1,
           datatype: "bool", rw: "R", scale: 1.0, endianness: "",
           value: "", notes: r.notes || ""
         });
       });
 
       // Holding
-      const hMode = document.getElementById('holding-mode').value; // read_holding | write_single | write_multi
+      const hMode = document.getElementById('holding-mode').value;
       const hDT = document.getElementById('holding-dt').value;
       const hEnd = document.getElementById('holding-endian').value;
       const hScale = Number(document.getElementById('holding-scale').value);
@@ -347,21 +332,14 @@ INDEX_HTML = r"""
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
-          device: "HOLDING",
-          ip, unit_id: unit,
-          function: hMode,
-          address: r.address,
-          count: hCount,
-          datatype: hDT,
-          rw: hIsWrite ? 'W' : 'R',
-          scale: hScale,
-          endianness: hEnd,
-          value: hIsWrite ? (r.value||'').trim() : "",
-          notes: r.notes || ""
+          device: "HOLDING", ip, unit_id: unit,
+          function: hMode, address: r.address, count: hCount,
+          datatype: hDT, rw: hIsWrite ? "W":"R", scale: hScale, endianness: hEnd,
+          value: hIsWrite ? (r.value||'').trim() : "", notes: r.notes || ""
         });
       });
 
-      // Input Registers (read only)
+      // Input (read only)
       const iDT = document.getElementById('input-dt').value;
       const iEnd = document.getElementById('input-endian').value;
       const iScale = Number(document.getElementById('input-scale').value);
@@ -371,11 +349,8 @@ INDEX_HTML = r"""
         const ip = r.ip || def_ip;
         const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
-          device: "INPUT",
-          ip, unit_id: unit,
-          function: "read_input",
-          address: r.address,
-          count: iCount,
+          device: "INPUT", ip, unit_id: unit,
+          function: "read_input", address: r.address, count: iCount,
           datatype: iDT, rw: "R", scale: iScale, endianness: iEnd,
           value: "", notes: r.notes || ""
         });
@@ -470,7 +445,6 @@ async def run_mapping(request: Request):
 
     try:
         for r in rows:
-            # Default normalizations + preserve notes
             norm = {
                 "device": r.get("device", ""),
                 "ip": r.get("ip", ""),
@@ -486,9 +460,7 @@ async def run_mapping(request: Request):
                 "notes": r.get("notes", "")
             }
             res = perform_row(norm, clients, timeout=timeout, dry=dry)
-            # echo notes back
-            out = {**norm, **res}
-            results.append(out)
+            results.append({**norm, **res})
     finally:
         for c in list(clients.values()):
             try:
