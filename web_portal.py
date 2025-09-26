@@ -8,13 +8,13 @@
 #   pip install fastapi uvicorn python-multipart
 #   (plus your requirements.txt: pandas, openpyxl, pymodbus)
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Response
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from tempfile import NamedTemporaryFile
 from typing import List, Dict, Any, Tuple
 
-# Reuse core logic from the CLI file in the same folder
+# Reuse core logic from your CLI module in the same folder
 from pymodbus.client import ModbusTcpClient
 from modbus_portal_cli import load_rows, perform_row
 
@@ -26,7 +26,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Use a raw triple-quoted string; JS builds DOM with createElement (no join('') anywhere)
 INDEX_HTML = r"""
 <!doctype html>
 <html>
@@ -148,8 +147,15 @@ INDEX_HTML = r"""
 
       const fd = new FormData(form);
       try {
-        const resp = await fetch('/run', { method: 'POST', body: fd });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const resp = await fetch(window.location.origin + '/run', {
+          method: 'POST',
+          body: fd,
+          credentials: 'same-origin'
+        });
+        if (!resp.ok) {
+          const t = await resp.text().catch(()=> '');
+          throw new Error(`HTTP ${resp.status} ${t || ''}`.trim());
+        }
         const data = await resp.json();
         const cols = data.columns || [];
         const rows = data.rows || [];
@@ -184,6 +190,10 @@ INDEX_HTML = r"""
 async def index():
     return HTMLResponse(INDEX_HTML)
 
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)  # silence browser favicon request
+
 @app.post("/run")
 async def run_mapping(
     mapping: UploadFile = File(...),
@@ -212,6 +222,5 @@ async def run_mapping(
             except Exception:
                 pass
 
-    # Normalize to a compact table for the browser
     columns = sorted({k for r in results for k in r.keys()})
     return {"columns": columns, "rows": results}
