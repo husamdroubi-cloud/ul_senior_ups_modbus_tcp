@@ -1,6 +1,6 @@
 # web_portal.py
 # In-page Modbus portal (no file upload). Configure tables for Coils / Discrete / Holding / Input regs,
-# choose counts, enter addresses/values, then Read/Write via JSON.
+# choose counts, per-row IP/Unit overrides, enter values/notes, then Read/Write via JSON.
 #
 # Run:
 #   python -m uvicorn web_portal:app --reload --port 8000
@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any, Tuple
 
 from pymodbus.client import ModbusTcpClient
-from modbus_portal_cli import perform_row  # we reuse decoding + row execution
+from modbus_portal_cli import perform_row  # reuse decoding + row execution
 
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(
@@ -41,7 +41,7 @@ INDEX_HTML = r"""
     input, select, button { font-size: 14px; padding: 4px 6px; }
     input[type="number"] { width: 7em; }
     table { border-collapse: collapse; width: 100%; margin-top: 12px; }
-    th, td { border: 1px solid #eee; padding: 6px 8px; font-size: 13px; }
+    th, td { border: 1px solid #eee; padding: 6px 8px; font-size: 13px; vertical-align: top; }
     th { background: #fafafa; text-align: left; }
     .ok { color: #0a7a2f; font-weight: 600; }
     .err { color: #b00020; font-weight: 600; }
@@ -51,22 +51,26 @@ INDEX_HTML = r"""
     .tabbar button.active { background: #e8f0ff; border-color: #7aa2ff; }
     .hidden { display:none; }
     .gridnum { width: 5em; }
-    .valuecell { min-width: 6em; }
+    .valuecell { min-width: 8em; }
+    .ipcell { min-width: 11em; }
+    .unitcell { min-width: 5em; }
+    .notescell { min-width: 12em; }
   </style>
 </head>
 <body>
   <header>
     <h2>Modbus TCP Portal – No Upload (Form Mode)</h2>
-    <div class="muted">Configure rows for each table, then click Read/Write. Addresses are <b>0-based</b>.</div>
+    <div class="muted">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>. Addresses are <b>0-based</b>.</div>
   </header>
 
   <div class="card">
     <div class="row">
-      <label>Device/IP <input id="ip" placeholder="192.168.1.10" /></label>
-      <label>Unit ID <input id="unit_id" type="number" min="0" max="247" value="1" /></label>
+      <label>Default Device/IP <input id="ip" placeholder="192.168.1.10" /></label>
+      <label>Default Unit ID <input id="unit_id" type="number" min="0" max="247" value="1" /></label>
       <label>Timeout (s) <input id="timeout" type="number" step="0.1" min="0.1" value="3.0" /></label>
       <label><input id="dry" type="checkbox" checked /> Dry-run</label>
     </div>
+    <div class="muted">Each row can override IP/Unit. Leave blank to use defaults above.</div>
   </div>
 
   <div class="card">
@@ -86,24 +90,24 @@ INDEX_HTML = r"""
           <select id="coils-mode">
             <option value="read_coils">Read Coils</option>
             <option value="write_single">Write Single Coil (0/1)</option>
-            <option value="write_multi">Write Multiple Coils (use comma list)</option>
+            <option value="write_multi">Write Multiple Coils (comma/semicolon list)</option>
           </select>
         </label>
         <button id="coils-build">Build Table</button>
       </div>
-      <div class="muted">For writes, put values in the <b>Value</b> column. For multi write, provide comma/semicolon-separated 0/1 values.</div>
       <table id="coils-table"></table>
+      <div class="muted">For writes, put values in the <b>Value</b> column. For multi write, provide 0/1 values like <code>1,0,1</code>.</div>
     </div>
 
-    <!-- Discrete Inputs -->
+    <!-- Discrete Inputs (read-only) -->
     <div id="tab-discrete" class="section hidden">
       <div class="row">
         <label>Rows <input class="gridnum" id="discrete-rows" type="number" min="1" value="8" /></label>
         <label>Base address <input class="gridnum" id="discrete-base" type="number" min="0" value="0" /></label>
         <button id="discrete-build">Build Table</button>
       </div>
-      <div class="muted">Discrete inputs are read-only (bits).</div>
       <table id="discrete-table"></table>
+      <div class="muted">Discrete inputs are read-only (bits).</div>
     </div>
 
     <!-- Holding Registers -->
@@ -134,11 +138,11 @@ INDEX_HTML = r"""
         <label>Scale <input id="holding-scale" class="gridnum" type="number" step="0.01" value="1.0" /></label>
         <button id="holding-build">Build Table</button>
       </div>
-      <div class="muted">For 32-bit types, two registers are consumed per row.</div>
       <table id="holding-table"></table>
+      <div class="muted">For 32-bit types, two registers are consumed per row.</div>
     </div>
 
-    <!-- Input Registers -->
+    <!-- Input Registers (read-only) -->
     <div id="tab-input" class="section hidden">
       <div class="row">
         <label>Rows <input class="gridnum" id="input-rows" type="number" min="1" value="4" /></label>
@@ -164,7 +168,8 @@ INDEX_HTML = r"""
 
     <div class="section">
       <div class="row">
-        <button id="run-btn">Run</button>
+        <button id="read-btn">Read All</button>
+        <button id="write-btn">Write All</button>
         <a id="download" href="#" download="results.csv" style="display:none">Download results.csv</a>
       </div>
       <div id="status" class="muted"></div>
@@ -192,33 +197,27 @@ INDEX_HTML = r"""
     const escCsv = s => '"' + String(s ?? '').replace(/"/g,'""') + '"';
     const escHtml = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-    function buildSimpleTable(table, base, rows, includeValue=false) {
+    function buildTable(table, base, rows, includeValue, includeDatatypeNotes=false) {
       table.innerHTML = '';
       const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>#</th><th>Address</th>' + (includeValue?'<th>Value</th>':'') + '</tr>';
+      let head = '<tr><th>#</th><th class="ipcell">IP (override)</th><th class="unitcell">Unit</th><th>Address</th>';
+      if (includeDatatypeNotes) head += '<th class="valuecell">Value (int/float or comma list)</th>';
+      else if (includeValue) head += '<th class="valuecell">Value</th>';
+      head += '<th class="notescell">Notes</th></tr>';
+      thead.innerHTML = head;
       table.appendChild(thead);
       const tbody = document.createElement('tbody');
       for (let i=0;i<rows;i++) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${i+1}</td>
+        tr.innerHTML = `
+          <td>${i+1}</td>
+          <td><input placeholder="" class="ipcell"></td>
+          <td><input type="number" min="0" max="247" value="" class="unitcell"></td>
           <td><input type="number" min="0" value="${base+i}" class="gridnum"></td>
-          ${includeValue?'<td class="valuecell"><input></td>':''}`;
-        tbody.appendChild(tr);
-      }
-      table.appendChild(tbody);
-    }
-
-    function buildHoldingInputTable(table, base, rows, includeValue=false) {
-      table.innerHTML = '';
-      const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>#</th><th>Address</th>' + (includeValue?'<th>Value (int/float or comma list)</th>':'') + '</tr>';
-      table.appendChild(thead);
-      const tbody = document.createElement('tbody');
-      for (let i=0;i<rows;i++) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${i+1}</td>
-          <td><input type="number" min="0" value="${base+(i)}" class="gridnum"></td>
-          ${includeValue?'<td class="valuecell"><input></td>':''}`;
+          ${includeValue ? '<td class="valuecell"><input></td>' : ''}
+          ${includeDatatypeNotes ? (!includeValue ? '<td class="valuecell"><input></td>' : '') : ''}
+          <td class="notescell"><input placeholder="free text notes..."></td>
+        `;
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
@@ -226,28 +225,30 @@ INDEX_HTML = r"""
 
     // Build buttons
     document.getElementById('coils-build').onclick = () => {
-      buildSimpleTable(document.getElementById('coils-table'),
+      const includeVal = document.getElementById('coils-mode').value !== 'read_coils';
+      buildTable(document.getElementById('coils-table'),
         Number(document.getElementById('coils-base').value),
         Number(document.getElementById('coils-rows').value),
-        document.getElementById('coils-mode').value!=='read_coils');
+        includeVal, false);
     };
     document.getElementById('discrete-build').onclick = () => {
-      buildSimpleTable(document.getElementById('discrete-table'),
+      buildTable(document.getElementById('discrete-table'),
         Number(document.getElementById('discrete-base').value),
         Number(document.getElementById('discrete-rows').value),
-        false);
+        false, false);
     };
     document.getElementById('holding-build').onclick = () => {
-      buildHoldingInputTable(document.getElementById('holding-table'),
+      const includeVal = document.getElementById('holding-mode').value !== 'read_holding';
+      buildTable(document.getElementById('holding-table'),
         Number(document.getElementById('holding-base').value),
         Number(document.getElementById('holding-rows').value),
-        document.getElementById('holding-mode').value!=='read_holding');
+        includeVal, true);
     };
     document.getElementById('input-build').onclick = () => {
-      buildHoldingInputTable(document.getElementById('input-table'),
+      buildTable(document.getElementById('input-table'),
         Number(document.getElementById('input-base').value),
         Number(document.getElementById('input-rows').value),
-        false);
+        false, true);
     };
 
     // Build default tables on load
@@ -261,78 +262,103 @@ INDEX_HTML = r"""
       const trs = tableEl.querySelectorAll('tbody tr');
       trs.forEach(tr => {
         const tds = tr.querySelectorAll('td');
-        const addr = tds[1].querySelector('input')?.value ?? '';
-        const valInput = tds[2]?.querySelector('input');
+        const ip = tds[1].querySelector('input')?.value ?? '';
+        const unit = tds[2].querySelector('input')?.value ?? '';
+        const addr = tds[3].querySelector('input')?.value ?? '';
+        // value is optional / may not exist
+        let valueCellIdx = 4;
+        let value = '';
+        if (tds[valueCellIdx] && tds[valueCellIdx].querySelector('input')) {
+          value = tds[valueCellIdx].querySelector('input').value;
+          valueCellIdx++;
+        }
+        const notes = (tds[valueCellIdx] && tds[valueCellIdx].querySelector('input'))
+          ? tds[valueCellIdx].querySelector('input').value
+          : '';
         rows.push({
+          ip: ip.trim(),
+          unit_id: unit === '' ? '' : Number(unit),
           address: addr === '' ? '' : Number(addr),
-          value: valInput ? valInput.value : ''
+          value: value ?? '',
+          notes
         });
       });
       return rows;
     }
 
-    function buildOps() {
-      const ip = document.getElementById('ip').value.trim();
-      const unit_id = Number(document.getElementById('unit_id').value);
+    function buildOps(which) { // which: 'read' | 'write'
+      const def_ip = document.getElementById('ip').value.trim();
+      const def_unit = Number(document.getElementById('unit_id').value);
       const timeout = Number(document.getElementById('timeout').value);
       const dry = document.getElementById('dry').checked;
 
       const ops = [];
+
       // Coils
-      const coilsMode = document.getElementById('coils-mode').value;
+      const coilsMode = document.getElementById('coils-mode').value; // read_coils | write_single | write_multi
       rowsFromTable(document.getElementById('coils-table')).forEach(r => {
         if (r.address === '') return;
+        const isWrite = (coilsMode !== 'read_coils');
+        if ((which === 'read' && isWrite) || (which === 'write' && !isWrite)) return;
+        const ip = r.ip || def_ip;
+        const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         const base = {
           device: "COILS",
-          ip, unit_id,
+          ip, unit_id: unit,
           function: coilsMode,
           address: r.address,
           count: 1,
           datatype: "bool",
           rw: coilsMode==='read_coils' ? 'R':'W',
           scale: 1.0,
-          endianness: ""
+          endianness: "",
+          value: isWrite ? (coilsMode==='write_single' ? (r.value||'0').trim() : (r.value||'').trim()) : "",
+          notes: r.notes || ""
         };
-        if (coilsMode==='write_single') base.value = (r.value||'0').trim();
-        if (coilsMode==='write_multi')  base.value = (r.value||'').trim(); // comma list
         ops.push(base);
       });
 
       // Discrete Inputs (read only)
       rowsFromTable(document.getElementById('discrete-table')).forEach(r => {
-        if (r.address === '') return;
+        if (r.address === '' || which === 'write') return;
+        const ip = r.ip || def_ip;
+        const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
           device: "DISCRETE",
-          ip, unit_id,
+          ip, unit_id: unit,
           function: "read_discrete",
           address: r.address,
           count: 1,
-          datatype: "bool", rw: "R", scale: 1.0, endianness: ""
+          datatype: "bool", rw: "R", scale: 1.0, endianness: "",
+          value: "", notes: r.notes || ""
         });
       });
 
       // Holding
-      const hMode = document.getElementById('holding-mode').value;
+      const hMode = document.getElementById('holding-mode').value; // read_holding | write_single | write_multi
       const hDT = document.getElementById('holding-dt').value;
       const hEnd = document.getElementById('holding-endian').value;
       const hScale = Number(document.getElementById('holding-scale').value);
       const hCount = (hDT==="int32"||hDT==="float32") ? 2 : 1;
+      const hIsWrite = (hMode !== 'read_holding');
       rowsFromTable(document.getElementById('holding-table')).forEach(r => {
         if (r.address === '') return;
-        const base = {
+        if ((which === 'read' && hIsWrite) || (which === 'write' && !hIsWrite)) return;
+        const ip = r.ip || def_ip;
+        const unit = (r.unit_id === '' ? def_unit : r.unit_id);
+        ops.push({
           device: "HOLDING",
-          ip, unit_id,
+          ip, unit_id: unit,
           function: hMode,
           address: r.address,
           count: hCount,
           datatype: hDT,
-          rw: hMode==='read_holding' ? 'R':'W',
+          rw: hIsWrite ? 'W' : 'R',
           scale: hScale,
-          endianness: hEnd
-        };
-        if (hMode==='write_single') base.value = (r.value||'0').trim();
-        if (hMode==='write_multi')  base.value = (r.value||'').trim(); // comma list for multi
-        ops.push(base);
+          endianness: hEnd,
+          value: hIsWrite ? (r.value||'').trim() : "",
+          notes: r.notes || ""
+        });
       });
 
       // Input Registers (read only)
@@ -341,14 +367,17 @@ INDEX_HTML = r"""
       const iScale = Number(document.getElementById('input-scale').value);
       const iCount = (iDT==="int32"||iDT==="float32") ? 2 : 1;
       rowsFromTable(document.getElementById('input-table')).forEach(r => {
-        if (r.address === '') return;
+        if (r.address === '' || which === 'write') return;
+        const ip = r.ip || def_ip;
+        const unit = (r.unit_id === '' ? def_unit : r.unit_id);
         ops.push({
           device: "INPUT",
-          ip, unit_id,
+          ip, unit_id: unit,
           function: "read_input",
           address: r.address,
           count: iCount,
-          datatype: iDT, rw: "R", scale: iScale, endianness: iEnd
+          datatype: iDT, rw: "R", scale: iScale, endianness: iEnd,
+          value: "", notes: r.notes || ""
         });
       });
 
@@ -387,10 +416,10 @@ INDEX_HTML = r"""
       download.style.display = 'inline-block';
     }
 
-    document.getElementById('run-btn').onclick = async () => {
-      const { ops, timeout, dry } = buildOps();
+    async function postOps(which) {
+      const { ops, timeout, dry } = buildOps(which);
       const status = document.getElementById('status');
-      status.textContent = 'Running ' + ops.length + ' operations...';
+      status.textContent = (which==='read' ? 'Reading ' : 'Writing ') + ops.length + ' operations...';
       try {
         const resp = await fetch(window.location.origin + '/run', {
           method: 'POST',
@@ -408,7 +437,10 @@ INDEX_HTML = r"""
       } catch (err) {
         status.textContent = 'Error: ' + (err?.message || err);
       }
-    };
+    }
+
+    document.getElementById('read-btn').onclick  = () => postOps('read');
+    document.getElementById('write-btn').onclick = () => postOps('write');
   })();
   </script>
 </body>
@@ -433,34 +465,36 @@ async def run_mapping(request: Request):
     if not isinstance(rows, list) or not rows:
         raise HTTPException(status_code=400, detail="No rows provided")
 
-    # Normalize keys to what perform_row expects
     clients: Dict[Tuple[str, float], ModbusTcpClient] = {}
     results: List[Dict[str, Any]] = []
 
     try:
-      for r in rows:
-          # map/normalize keys; tolerate missing fields with defaults
-          norm = {
-              "device": r.get("device", ""),
-              "ip": r.get("ip", ""),
-              "unit_id": r.get("unit_id", 1),
-              "function": r.get("function", ""),
-              "address": r.get("address", 0),
-              "count": r.get("count", 1),
-              "datatype": r.get("datatype", "int16"),
-              "rw": r.get("rw", "R"),
-              "scale": r.get("scale", 1.0),
-              "endianness": r.get("endianness", "ABCD"),
-              "value": r.get("value", "")
-          }
-          res = perform_row(norm, clients, timeout=timeout, dry=dry)
-          results.append({**norm, **res})
+        for r in rows:
+            # Default normalizations + preserve notes
+            norm = {
+                "device": r.get("device", ""),
+                "ip": r.get("ip", ""),
+                "unit_id": r.get("unit_id", 1),
+                "function": r.get("function", ""),
+                "address": r.get("address", 0),
+                "count": r.get("count", 1),
+                "datatype": r.get("datatype", "int16"),
+                "rw": r.get("rw", "R"),
+                "scale": r.get("scale", 1.0),
+                "endianness": r.get("endianness", "ABCD"),
+                "value": r.get("value", ""),
+                "notes": r.get("notes", "")
+            }
+            res = perform_row(norm, clients, timeout=timeout, dry=dry)
+            # echo notes back
+            out = {**norm, **res}
+            results.append(out)
     finally:
-      for c in list(clients.values()):
-          try:
-              c.close()
-          except Exception:
-              pass
+        for c in list(clients.values()):
+            try:
+                c.close()
+            except Exception:
+                pass
 
     columns = sorted({k for r in results for k in r.keys()})
     return {"columns": columns, "rows": results}
