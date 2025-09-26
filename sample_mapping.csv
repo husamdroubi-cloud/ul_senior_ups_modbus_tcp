@@ -1,8 +1,7 @@
-device,ip,unit_id,function,address,count,datatype,rw,scale,endianness,value
-# READ EXAMPLES
-UPS1,127.0.0.1,1,read_holding,0,2,float32,R,1.0,CDAB,
-UPS1,127.0.0.1,1,read_input,10,1,int16,R,1.0,ABCD,
-UPS1,127.0.0.1,1,read_coils,0,8,bool,R,1.0,,
-# WRITE EXAMPLES
-UPS1,127.0.0.1,1,write_single,20,1,int16,W,1.0,,123
-UPS1,127.0.0.1,1,write_multi,30,3,int16,W,1.0,,100,101,102
+﻿device,ip,unit_id,function,address,count,datatype,rw,scale,endianness,value,notes
+UPS1,127.0.0.1,1,read_holding,0,2,float32,R,1.0,CDAB,,Battery voltage (example)
+UPS1,127.0.0.1,1,read_input,10,1,int16,R,1.0,ABCD,,Input reg demo
+UPS1,127.0.0.1,1,read_coils,0,8,bool,R,1.0,,,"First 8 coils"
+UPS1,127.0.0.1,1,write_single,20,1,int16,W,1.0,,123,Write single register 20
+UPS1,127.0.0.1,1,write_multi,30,3,int16,W,1.0,,"100,101,102","Write 3 registers from 30"
+UPS2,127.0.0.1,2,read_holding,2,2,int32,R,1.0,DCBA,,32-bit int with byte+word swap
