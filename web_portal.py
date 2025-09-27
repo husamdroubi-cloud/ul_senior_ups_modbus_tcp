@@ -1,38 +1,45 @@
-# web_portal.py — Compact UI, wide Notes, reference defaults, 0-based normalization
-# + Node metadata persistence (JSON file with env fallback) + polling endpoints.
+# web_portal.py — Compact UI, wide Notes, standard Modbus reference defaults, 0-based normalization
+# Node Name & Role are user-controlled in the UI, persisted to JSON (with ENV fallback),
+# and re-applied from localStorage on page load. Pollable endpoints: /node and /node/name.
+
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any, Tuple
+from pathlib import Path
 from pymodbus.client import ModbusTcpClient
 from modbus_portal_cli import perform_row
-from pathlib import Path
 import json
 import os
 
 APP_DIR = Path(__file__).resolve().parent
 CONF_PATH = APP_DIR / "node_config.json"
 
+
 def _load_node_config() -> Dict[str, str]:
-    # 1) file
+    # Prefer file if present
     if CONF_PATH.exists():
         try:
             with CONF_PATH.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-                name = str(data.get("name", "")).strip()
+                name = str(data.get("name", "")).strip() or "UPS Node A"
                 role = str(data.get("role", "Master")).strip()
                 if role not in ("Master", "Slave"):
                     role = "Master"
-                return {"name": name or "UPS Node A", "role": role}
+                return {"name": name, "role": role}
         except Exception:
             pass
-    # 2) env
+    # Fall back to env
     name = os.getenv("NODE_NAME", "UPS Node A").strip()
     role = os.getenv("NODE_ROLE", "Master").strip()
     role = role if role in ("Master", "Slave") else "Master"
     return {"name": name, "role": role}
 
+
 def _save_node_config(name: str, role: str) -> bool:
+    # Skip writing if CONFIG_MODE=env (useful on Render if you want env-only)
+    if os.getenv("CONFIG_MODE") == "env":
+        return True
     try:
         with CONF_PATH.open("w", encoding="utf-8") as f:
             json.dump({"name": name, "role": role}, f, ensure_ascii=False, indent=2)
@@ -40,10 +47,11 @@ def _save_node_config(name: str, role: str) -> bool:
     except Exception:
         return False
 
+
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Node metadata (persisted)
+# Initialize node metadata
 cfg = _load_node_config()
 app.state.node_name = cfg["name"]
 app.state.node_role = cfg["role"]
@@ -204,9 +212,15 @@ td input{width:100%}
   const tabBtns=document.querySelectorAll('.tabbar button');
   const tabs={coils:document.getElementById('tab-coils'),discrete:document.getElementById('tab-discrete'),holding:document.getElementById('tab-holding'),input:document.getElementById('tab-input')};
   tabBtns.forEach(b=>b.addEventListener('click',()=>{tabBtns.forEach(x=>x.classList.remove('active'));b.classList.add('active');const k=b.dataset.tab;Object.keys(tabs).forEach(t=>tabs[t].classList.toggle('hidden',t!==k));}));
-  const escCsv=s=>'"'+String(s??'').replace(/"/g,'""')+'"'; const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  // Build grid
+  const escCsv=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
+  const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  // === Local persistence keys for Node meta ===
+  const LS_NAME='ups_node_name';
+  const LS_ROLE='ups_node_role';
+
+  // --- Build grid helper ---
   function buildTable(table,base,rows,includeValue,includeDatatypeNotes=false){
     table.innerHTML='';
     const thead=document.createElement('thead');
@@ -215,6 +229,7 @@ td input{width:100%}
     else if(includeValue) head+='<th class="valuecell">Value</th>';
     head+='<th class="notescell">Notes</th></tr>';
     thead.innerHTML=head; table.appendChild(thead);
+
     const tbody=document.createElement('tbody');
     for(let i=0;i<rows;i++){
       const tr=document.createElement('tr');
@@ -237,7 +252,7 @@ td input{width:100%}
   document.getElementById('input-build').onclick=()=>{buildTable(document.getElementById('input-table'),Number(document.getElementById('input-base').value),Number(document.getElementById('input-rows').value),false,true);};
   document.getElementById('coils-build').click();document.getElementById('discrete-build').click();document.getElementById('holding-build').click();document.getElementById('input-build').click();
 
-  // Helpers
+  // --- Extract table rows ---
   function rowsFromTable(tableEl){
     const rows=[]; const trs=tableEl.querySelectorAll('tbody tr');
     trs.forEach(tr=>{
@@ -249,67 +264,150 @@ td input{width:100%}
     });
     return rows;
   }
+
+  // --- Reference to zero-based ---
   function refToZeroBased(kind,addr){
     if(addr===''||isNaN(addr)) return addr; const a=Number(addr);
-    if(kind==='coils')return a>=1?a-1:a; if(kind==='discrete')return a>=10001?a-10001:a; if(kind==='input')return a>=30001?a-30001:a; if(kind==='holding')return a>=40001?a-40001:a; return a;
+    if(kind==='coils')return a>=1?a-1:a;
+    if(kind==='discrete')return a>=10001?a-10001:a;
+    if(kind==='input')return a>=30001?a-30001:a;
+    if(kind==='holding')return a>=40001?a-40001:a;
+    return a;
   }
 
-  // Node meta load/save (persisted on server)
+  // --- Node meta: load from server, then override with localStorage and sync back ---
   async function loadNodeMeta(){
     try{
-      const r=await fetch('/node'); if(!r.ok) return;
-      const j=await r.json();
-      const nn=document.getElementById('node_name'); const rl=document.getElementById('node_role');
-      if(j.name!==undefined) nn.value=j.name;
-      if(j.role!==undefined) rl.value=j.role;
+      const r=await fetch('/node');
+      if(r.ok){
+        const j=await r.json();
+        document.getElementById('node_name').value = j.name ?? '';
+        document.getElementById('node_role').value = j.role ?? 'Master';
+      }
     }catch(_){}
+
+    const rememberedName = localStorage.getItem(LS_NAME);
+    const rememberedRole = localStorage.getItem(LS_ROLE);
+    let changed = false;
+
+    if (rememberedName) {
+      document.getElementById('node_name').value = rememberedName;
+      changed = True;
+    }
+    if (rememberedRole === 'Master' || rememberedRole === 'Slave') {
+      document.getElementById('node_role').value = rememberedRole;
+      changed = true;
+    }
+
+    if (changed) {
+      try{
+        await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            name: document.getElementById('node_name').value.trim(),
+            role: document.getElementById('node_role').value
+          })});
+      }catch(_){}
+    }
   }
+
   async function saveNodeMeta(){
     const nn=document.getElementById('node_name').value.trim();
     const rl=document.getElementById('node_role').value;
     const s=document.getElementById('save-status');
+
+    // Persist in browser so the user’s choice is re-applied after any restart
+    localStorage.setItem(LS_NAME, nn);
+    localStorage.setItem(LS_ROLE, rl);
+
     try{
       const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn,role:rl})});
-      if(!r.ok){s.textContent='Save failed';return;}
-      s.textContent='Saved'; setTimeout(()=>s.textContent='',1500);
-    }catch(_){s.textContent='Save failed';}
+      s.textContent = r.ok ? 'Saved' : 'Save failed';
+    }catch(_){ s.textContent='Save failed'; }
+    setTimeout(()=>s.textContent='',1500);
   }
-  document.getElementById('save-meta').onclick=saveNodeMeta;
+
+  document.getElementById('save-meta').onclick = saveNodeMeta;
   loadNodeMeta();
 
-  // Build ops
+  // --- Build ops payload ---
   function buildOps(which){
-    const def_ip=document.getElementById('ip').value.trim(); const def_unit=Number(document.getElementById('unit_id').value);
-    const timeout=Number(document.getElementById('timeout').value); const dry=document.getElementById('dry').checked;
-    const node_name=document.getElementById('node_name').value.trim(); const node_role=document.getElementById('node_role').value;
+    const def_ip=document.getElementById('ip').value.trim();
+    const def_unit=Number(document.getElementById('unit_id').value);
+    const timeout=Number(document.getElementById('timeout').value);
+    const dry=document.getElementById('dry').checked;
+    const node_name=document.getElementById('node_name').value.trim();
+    const node_role=document.getElementById('node_role').value;
     const ops=[];
+
     const coilsMode=document.getElementById('coils-mode').value;
-    rowsFromTable(document.getElementById('coils-table')).forEach(r=>{ if(r.address==='')return; const addr0=refToZeroBased('coils',r.address); const isW=(coilsMode!=='read_coils'); if((which==='read'&&isW)||(which==='write'&&!isW))return; const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
-      ops.push({node_name,node_role,device:"COILS",ip,unit_id:unit,function:coilsMode,address:addr0,count:1,datatype:"bool",rw:isW?"W":"R",scale:1.0,endianness:"",value:isW?(coilsMode==='write_single'?(r.value||'0').trim():(r.value||'').trim()):"",notes:r.notes||""});});
-    rowsFromTable(document.getElementById('discrete-table')).forEach(r=>{ if(r.address===''||which==='write')return; const addr0=refToZeroBased('discrete',r.address); const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
-      ops.push({node_name,node_role,device:"DISCRETE",ip,unit_id:unit,function:"read_discrete",address:addr0,count:1,datatype:"bool",rw:"R",scale:1.0,endianness:"",value:"",notes:r.notes||""});});
-    const hMode=document.getElementById('holding-mode').value, hDT=document.getElementById('holding-dt').value, hEnd=document.getElementById('holding-endian').value, hScale=Number(document.getElementById('holding-scale').value);
-    const hCount=(hDT==="int32"||hDT==="float32")?2:1; const hW=(hMode!=="read_holding");
-    rowsFromTable(document.getElementById('holding-table')).forEach(r=>{ if(r.address==='')return; if((which==='read'&&hW)||(which==='write'&&!hW))return; const addr0=refToZeroBased('holding',r.address); const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
-      ops.push({node_name,node_role,device:"HOLDING",ip,unit_id:unit,function:hMode,address:addr0,count:hCount,datatype:hDT,rw:hW?"W":"R",scale:hScale,endianness:hEnd,value:hW?(r.value||'').trim():"",notes:r.notes||""});});
-    const iDT=document.getElementById('input-dt').value, iEnd=document.getElementById('input-endian').value, iScale=Number(document.getElementById('input-scale').value);
+    rowsFromTable(document.getElementById('coils-table')).forEach(r=>{
+      if(r.address==='')return;
+      const addr0=refToZeroBased('coils',r.address);
+      const isW=(coilsMode!=='read_coils');
+      if((which==='read'&&isW)||(which==='write'&&!isW))return;
+      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      ops.push({node_name,node_role,device:"COILS",ip,unit_id:unit,function:coilsMode,address:addr0,count:1,datatype:"bool",rw:isW?"W":"R",scale:1.0,endianness:"",value:isW?(coilsMode==='write_single'?(r.value||'0').trim():(r.value||'').trim()):"",notes:r.notes||""});
+    });
+
+    rowsFromTable(document.getElementById('discrete-table')).forEach(r=>{
+      if(r.address===''||which==='write')return;
+      const addr0=refToZeroBased('discrete',r.address);
+      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      ops.push({node_name,node_role,device:"DISCRETE",ip,unit_id:unit,function:"read_discrete",address:addr0,count:1,datatype:"bool",rw:"R",scale:1.0,endianness:"",value:"",notes:r.notes||""});
+    });
+
+    const hMode=document.getElementById('holding-mode').value,
+          hDT=document.getElementById('holding-dt').value,
+          hEnd=document.getElementById('holding-endian').value,
+          hScale=Number(document.getElementById('holding-scale').value);
+    const hCount=(hDT==="int32"||hDT==="float32")?2:1;
+    const hW=(hMode!=="read_holding");
+
+    rowsFromTable(document.getElementById('holding-table')).forEach(r=>{
+      if(r.address==='')return;
+      if((which==='read'&&hW)||(which==='write'&&!hW))return;
+      const addr0=refToZeroBased('holding',r.address);
+      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      ops.push({node_name,node_role,device:"HOLDING",ip,unit_id:unit,function:hMode,address:addr0,count:hCount,datatype:hDT,rw:hW?"W":"R",scale:hScale,endianness:hEnd,value:hW?(r.value||'').trim():"",notes:r.notes||""});
+    });
+
+    const iDT=document.getElementById('input-dt').value,
+          iEnd=document.getElementById('input-endian').value,
+          iScale=Number(document.getElementById('input-scale').value);
     const iCount=(iDT==="int32"||iDT==="float32")?2:1;
-    rowsFromTable(document.getElementById('input-table')).forEach(r=>{ if(r.address===''||which==='write')return; const addr0=refToZeroBased('input',r.address); const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
-      ops.push({node_name,node_role,device:"INPUT",ip,unit_id:unit,function:"read_input",address:addr0,count:iCount,datatype:iDT,rw:"R",scale:iScale,endianness:iEnd,value:"",notes:r.notes||""});});
+
+    rowsFromTable(document.getElementById('input-table')).forEach(r=>{
+      if(r.address===''||which==='write')return;
+      const addr0=refToZeroBased('input',r.address);
+      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      ops.push({node_name,node_role,device:"INPUT",ip,unit_id:unit,function:"read_input",address:addr0,count:iCount,datatype:iDT,rw:"R",scale:iScale,endianness:iEnd,value:"",notes:r.notes||""});
+    });
+
     return {ops,timeout,dry,node:{name:node_name,role:node_role}};
   }
 
+  // --- Results renderer ---
   function renderResults(columns,rows){
     const div=document.getElementById('results'); div.style.display='block';
     let html='<h3>Results</h3><div class="muted">Rows: '+rows.length+'</div><div style="max-height:60vh;overflow:auto"><table><thead><tr>'+columns.map(c=>'<th>'+escHtml(c)+'</th>').join('')+'</tr></thead><tbody>';
-    for(const r of rows){ html+='<tr>'+columns.map(c=>{const v=r[c];const cls=(c.toLowerCase()==='ok')?(v?'ok':'err'):'';const t=(typeof v==='object')?escHtml(JSON.stringify(v)):escHtml(v);return '<td class="'+cls+'">'+t+'</td>';}).join('')+'</tr>'; }
+    for(const r of rows){
+      html+='<tr>'+columns.map(c=>{
+        const v=r[c]; const cls=(c.toLowerCase()==='ok')?(v?'ok':'err'):'';
+        const t=(typeof v==='object')?escHtml(JSON.stringify(v)):escHtml(v);
+        return '<td class="'+cls+'">'+t+'</td>';
+      }).join('')+'</tr>';
+    }
     html+='</tbody></table></div>'; div.innerHTML=html;
-    const esc=escCsv, hdr=columns.map(esc).join(','), body=rows.map(row=>columns.map(c=>esc(typeof row[c]==='object'?JSON.stringify(row[c]):(row[c]??''))).join(',')).join('\n');
-    const blob=new Blob([hdr+'\n'+body],{type:'text/csv'}), url=URL.createObjectURL(blob); const a=document.getElementById('download'); a.href=url; a.style.display='inline-block';
+
+    const header=columns.map(escCsv).join(','), body=rows.map(row=>columns.map(c=>escCsv(typeof row[c]==='object'?JSON.stringify(row[c]):(row[c]??''))).join(',')).join('\n');
+    const blob=new Blob([header+'\n'+body],{type:'text/csv'}), url=URL.createObjectURL(blob); const a=document.getElementById('download'); a.href=url; a.style.display='inline-block';
   }
 
+  // --- Post to server ---
   async function postOps(which){
-    const payload=buildOps(which); const status=document.getElementById('status'); status.textContent=(which==='read'?'Reading ':'Writing ')+payload.ops.length+' operations...';
+    const payload=buildOps(which);
+    const status=document.getElementById('status');
+    status.textContent=(which==='read'?'Reading ':'Writing ')+payload.ops.length+' operations...';
     try{
       const resp=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'same-origin'});
       if(!resp.ok){const t=await resp.text().catch(()=> ''); throw new Error('HTTP '+resp.status+' '+(t||''));}
@@ -330,7 +428,7 @@ async def index():
 async def favicon():
     return Response(status_code=204)
 
-# --- Node metadata endpoints (persisted) ---
+# ---- Node metadata endpoints (pollable) ----
 @app.get("/node")
 async def get_node():
     return {"name": app.state.node_name, "role": app.state.node_role}
@@ -351,16 +449,16 @@ async def set_node_config(req: Request):
     _save_node_config(app.state.node_name, app.state.node_role)
     return {"ok": True, "name": app.state.node_name, "role": app.state.node_role}
 
-# --- Run mapping ---
+# ---- Run mapping (executes operations) ----
 @app.post("/run")
 async def run_mapping(request: Request):
     payload = await request.json()
     rows: List[Dict[str, Any]] = payload.get("rows") or []
     timeout = float(payload.get("timeout", 3.0))
     dry = bool(payload.get("dry", False))
-    node = payload.get("node") or {}
 
-    # If UI included node updates, persist them
+    # Optional node info carried from UI; persist if changed
+    node = payload.get("node") or {}
     maybe_name = (node.get("name") or "").strip()
     maybe_role = (node.get("role") or "").strip()
     changed = False
@@ -393,8 +491,10 @@ async def run_mapping(request: Request):
             results.append({**norm, **res})
     finally:
         for c in list(clients.values()):
-            try: c.close()
-            except Exception: pass
+            try:
+                c.close()
+            except Exception:
+                pass
 
     columns = sorted({k for r in results for k in r.keys()})
     return {"columns": columns, "rows": results}
