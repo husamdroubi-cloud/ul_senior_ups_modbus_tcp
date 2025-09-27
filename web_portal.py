@@ -1,29 +1,37 @@
-# web_portal.py — serves logo from /assets, raw HTML string (no f-string), blue (i) icons,
-# 3-line title with right-aligned logo, Help modal + Print, Ping Device, Auto-build tables, /run orchestration.
+# web_portal.py — robust static logo + diagnostics + portal UI
+# - Serves /assets from ./assets
+# - Also serves /logo.png directly from assets (fallback)
+# - Adds /debug/static to show what the app sees
+# - Keeps node meta, ping, tabs, table builders, read/write via /run
 
 from fastapi import FastAPI, HTTPException, Response, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from typing import List, Dict, Any, Tuple
 from pathlib import Path
 from pymodbus.client import ModbusTcpClient
 from modbus_portal_cli import perform_row, parse_host_port
-import json, os
+import json, os, logging
 
-# -----------------------------------------------------------------------------
-# Paths & static
-# -----------------------------------------------------------------------------
+# ---------- Paths, logging ----------
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 APP_DIR = Path(__file__).resolve().parent
-STATIC_DIR = APP_DIR / "assets"
+STATIC_DIR = (APP_DIR / "assets").resolve()
 STATIC_DIR.mkdir(exist_ok=True)
 
-# Default logo path served locally; can be overridden with env LOGO_URL if desired
-LOGO_URL = os.getenv("LOGO_URL", "/assets/Braeden_Logo.png")
+# ---------- App ----------
+app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# -----------------------------------------------------------------------------
-# Node config (file with env fallback)
-# -----------------------------------------------------------------------------
+# Mount /assets
+try:
+    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR)), name="assets")
+    logging.info(f"Mounted /assets -> {STATIC_DIR}")
+except Exception as e:
+    logging.error(f"Failed to mount /assets: {e}")
+
+# ---------- Node config ----------
 CONF_PATH = APP_DIR / "node_config.json"
 
 def _load_node_config() -> Dict[str, str]:
@@ -52,23 +60,22 @@ def _save_node_config(name: str, role: str) -> bool:
     except Exception:
         return False
 
-# -----------------------------------------------------------------------------
-# App & middleware
-# -----------------------------------------------------------------------------
-app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-# Serve files from ./assets at /assets
-app.mount("/assets", StaticFiles(directory=str(STATIC_DIR)), name="assets")
-
 _cfg = _load_node_config()
 app.state.node_name = _cfg["name"]
 app.state.node_role = _cfg["role"]
 
-# -----------------------------------------------------------------------------
-# HTML (raw string; no f-strings). '__LOGO_URL__' gets replaced below.
-# -----------------------------------------------------------------------------
-INDEX_HTML_RAW = r"""
+# ---------- Startup diagnostics ----------
+@app.on_event("startup")
+async def _diag_startup():
+    try:
+        files = [p.name for p in STATIC_DIR.iterdir()]
+    except Exception as e:
+        files = [f"<error: {e}>"]
+    logging.info(f"APP_DIR= {APP_DIR}")
+    logging.info(f"STATIC_DIR= {STATIC_DIR}  exists={STATIC_DIR.exists()}  files={files}")
+
+# ---------- HTML (raw string; no f-strings) ----------
+INDEX_HTML = r"""
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Team 1 High Specification Smart UPS - UL/Braeden</title>
 <style>
@@ -106,16 +113,12 @@ td input{width:100%}
 .tabbar button.active{background:#e8f0ff;border-color:#7aa2ff}
 .hidden{display:none}
 .badge{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}
-
-/* Info (ⓘ) tooltip — ALWAYS light blue filled */
+/* Info (ⓘ) tooltip — light blue filled, always visible */
 .hint{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #7aa2ff;color:#0b3b8c;background:#dbeafe;font-size:12px;cursor:help}
 .hint::before{content:"ⓘ";line-height:1}
 .hint:hover,.hint.active{background:#c7dcff;border-color:#5d91ff}
 .hint .tip{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:420px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}
-.hint .tip a{color:#9ecbff}
-.hint .tip:after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:7px solid transparent;border-top-color:#111}
 .hint:hover .tip,.hint.active .tip{opacity:1;pointer-events:auto}
-
 /* Help modal */
 #help-btn{margin-left:8px}
 #help-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:9999}
@@ -126,13 +129,7 @@ td input{width:100%}
 #help-card .grid{display:grid;grid-template-columns:1fr;gap:8px}
 @media (min-width:800px){#help-card .grid{grid-template-columns:1fr 1fr}}
 #help-card .callout{border-left:4px solid #7aa2ff;background:#eef5ff;padding:8px;border-radius:8px}
-
-/* Print the help card nicely */
-@media print{
-  body *{visibility:hidden}
-  #help-card, #help-card *{visibility:visible}
-  #help-card{position:absolute;inset:auto;left:0;top:0;width:100%;box-shadow:none}
-}
+@media print{body *{visibility:hidden}#help-card,#help-card *{visibility:visible}#help-card{position:absolute;left:0;top:0;width:100%;box-shadow:none}}
 </style></head><body>
 
 <header>
@@ -140,58 +137,38 @@ td input{width:100%}
     <div class="brand-line brand1">Team 1 High Specification Smart UPS Senior Project</div>
     <div class="brand-line brand2">ModBus/TCP Polling and Simulation Portal</div>
     <div class="brand-line brand3">University of Louisiana &amp; Braeden Engineering Internship Program</div>
-    <div class="muted" style="margin-top:6px">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>. You may enter classic Modbus reference numbers (Coils 1–, Discrete 10001–, Input 30001–, Holding 40001–). The portal normalizes to <b>0-based</b> before sending.</div>
+    <div class="muted" style="margin-top:6px">Configure rows, then Read/Write. Classic refs (1/10001/30001/40001) are normalized to 0-based automatically.</div>
   </div>
   <div class="brand-right">
-    <img src="__LOGO_URL__" alt="Braeden logo" onerror="this.style.display='none'"/>
-    <div style="text-align:right;margin-top:6px">
-      <button id="help-btn" class="icon" title="Quick setup help">❓ Help</button>
-    </div>
+    <img src="/logo.png" alt="Braeden logo" onerror="this.style.display='none'"/>
+    <div style="text-align:right;margin-top:6px"><button id="help-btn" class="icon">❓ Help</button></div>
   </div>
 </header>
 
 <div class="card">
   <div class="row">
     <label>Node Name <input id="node_name" placeholder="e.g. UPS Node A"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Human-friendly name for this node. Shown at /node and /node/name.
-Examples: “UPS Node A”, “Gateway-01”.</span></span>
-
-    <label>Role
-      <select id="node_role"><option>Master</option><option>Slave</option></select>
-    </label>
-    <span class="hint" tabindex="0"><span class="tip">Master initiates reads/writes. Slave typically exposes values.
-You can change at any time; it’s metadata for now.</span></span>
+    <span class="hint" tabindex="0"><span class="tip">Human-friendly node name. Exposed at /node and /node/name.</span></span>
+    <label>Role <select id="node_role"><option>Master</option><option>Slave</option></select></label>
+    <span class="hint" tabindex="0"><span class="tip">Master initiates reads/writes. Slave exposes values.</span></span>
     <span class="muted">(polled at <code>/node</code> &amp; <code>/node/name</code>)</span>
   </div>
-
   <div class="row">
     <label>Default Device/IP <input id="ip" placeholder="192.168.1.10 or host:port"/></label>
-    <span class="hint" tabindex="0"><span class="tip">TCP target for all rows unless a row provides an override.
-Use host or host:port (e.g. 192.168.1.21:1502).</span></span>
-
-    <label>Default <span class="badge">Port</span> <input id="port" type="number" min="1" max="65535" value="502" title="For LAN sims use 1502"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Modbus/TCP port. Common: 502. Simulators often use 1502.</span></span>
-
+    <span class="hint" tabindex="0"><span class="tip">Global target unless a row overrides. host or host:port.</span></span>
+    <label>Default <span class="badge">Port</span> <input id="port" type="number" min="1" max="65535" value="502" title="Simulators often 1502"/></label>
+    <span class="hint" tabindex="0"><span class="tip">Common: 502. Sims: 1502.</span></span>
     <label>Default Unit ID <input id="unit_id" type="number" min="0" max="247" value="1"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Modbus Unit Identifier (slave ID). For TCP-only devices usually 1.
-Through TCP→RTU gateways it’s the RS-485 device ID (1–247).</span></span>
-
+    <span class="hint" tabindex="0"><span class="tip">For TCP-only devices, usually 1. For TCP→RTU gateways: RS-485 ID.</span></span>
     <label>Timeout (s) <input id="timeout" type="number" step="0.1" min="0.1" value="3.0"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Network timeout for each request. Increase on slow links.</span></span>
-
     <label><input id="dry" type="checkbox" checked/> Dry-run</label>
-    <span class="hint" tabindex="0"><span class="tip">If ON, writes are simulated locally (no change on device). Reads still go to the device.</span></span>
-
     <button id="save-meta">Save Node Meta</button><span id="save-status" class="muted"></span>
-    <button id="ping-btn" class="icon" title="Try connecting to Default Device/IP at Default Port">Ping Device</button>
-    <span id="ping-status" class="muted"></span>
+    <button id="ping-btn" class="icon">Ping Device</button><span id="ping-status" class="muted"></span>
   </div>
-
   <div class="row">
     <label><input id="auto" type="checkbox"/> Auto-Read</label>
     <label>every <input id="autoint" type="number" step="0.1" min="0.2" value="2.0" class="gridnum"/> s</label>
-    <span class="hint" tabindex="0"><span class="tip">When enabled, the portal triggers “Read All” periodically using the interval above.</span></span>
-    <span class="muted">Each row can override IP/Unit. You may also specify <code>host:port</code> in a row’s IP override. The global Port applies if no per-row port is given.</span>
+    <span class="muted">Per-row IP override supports host:port. Global Port applies otherwise.</span>
   </div>
 </div>
 
@@ -214,8 +191,6 @@ Through TCP→RTU gateways it’s the RS-485 device ID (1–247).</span></span>
           <option value="write_multi">Write Multiple Coils (comma/semicolon list)</option>
         </select>
       </label>
-      <span class="hint" tabindex="0"><span class="tip">Classic coil addresses start at 1.
-For multi-write put values like “1,0,1”.</span></span>
       <button id="coils-build">Build Table</button>
     </div>
     <table id="coils-table"></table>
@@ -225,7 +200,6 @@ For multi-write put values like “1,0,1”.</span></span>
     <div class="row">
       <label>Rows <input class="gridnum" id="discrete-rows" type="number" min="1" value="8"/></label>
       <label>Base address <input class="gridnum" id="discrete-base" type="number" min="0" value="10001"/></label>
-      <span class="hint" tabindex="0"><span class="tip">Discrete inputs are read-only bits. Classic references start at 10001.</span></span>
       <button id="discrete-build">Build Table</button>
     </div>
     <table id="discrete-table"></table>
@@ -242,15 +216,9 @@ For multi-write put values like “1,0,1”.</span></span>
           <option value="write_multi">Write Multiple Regs</option>
         </select>
       </label>
-      <label>Datatype
-        <select id="holding-dt"><option>int16</option><option>uint16</option><option>int32</option><option>float32</option></select>
-      </label>
-      <label>Endianness
-        <select id="holding-endian"><option>ABCD</option><option>BADC</option><option>CDAB</option><option>DCBA</option></select>
-      </label>
+      <label>Datatype <select id="holding-dt"><option>int16</option><option>uint16</option><option>int32</option><option>float32</option></select></label>
+      <label>Endianness <select id="holding-endian"><option>ABCD</option><option>BADC</option><option>CDAB</option><option>DCBA</option></select></label>
       <label>Scale <input id="holding-scale" class="gridnum" type="number" step="0.01" value="1.0"/></label>
-      <span class="hint" tabindex="0"><span class="tip">Use int32/float32 for two-register values. Endianness controls word/byte order.
-Scale lets you store raw units (e.g., *10) but display engineering units.</span></span>
       <button id="holding-build">Build Table</button>
     </div>
     <table id="holding-table"></table>
@@ -260,14 +228,9 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
     <div class="row">
       <label>Rows <input class="gridnum" id="input-rows" type="number" min="1" value="4"/></label>
       <label>Base address <input class="gridnum" id="input-base" type="number" min="0" value="30001"/></label>
-      <label>Datatype
-        <select id="input-dt"><option>int16</option><option>uint16</option><option>int32</option><option>float32</option></select>
-      </label>
-      <label>Endianness
-        <select id="input-endian"><option>ABCD</option><option>BADC</option><option>CDAB</option><option>DCBA</option></select>
-      </label>
+      <label>Datatype <select id="input-dt"><option>int16</option><option>uint16</option><option>int32</option><option>float32</option></select></label>
+      <label>Endianness <select id="input-endian"><option>ABCD</option><option>BADC</option><option>CDAB</option><option>DCBA</option></select></label>
       <label>Scale <input id="input-scale" class="gridnum" type="number" step="0.01" value="1.0"/></label>
-      <span class="hint" tabindex="0"><span class="tip">Input registers are read-only words. Choose datatype/endianness to match the device map.</span></span>
       <button id="input-build">Build Table</button>
     </div>
     <table id="input-table"></table>
@@ -283,51 +246,20 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
   </div>
 </div>
 
-<!-- HELP MODAL -->
 <div id="help-modal" aria-hidden="true">
   <div id="help-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
     <h3 id="help-title">Quick Setup: 2 Nodes (Master / Slave)</h3>
     <div class="grid">
-      <div class="callout">
-        <b>Node A (Master)</b>
-        <ul>
-          <li>Role: Master, Node Name: “UPS Node A”</li>
-          <li>Default Device/IP: <i>Node B</i> IP (e.g., 192.168.1.21), Port: 1502 (sim) or 502</li>
-          <li>Default Unit ID: 1</li>
-          <li>Coils/Holding: choose modes, enter addresses/values</li>
-          <li>Uncheck Dry-run to perform actual writes</li>
-        </ul>
-      </div>
-      <div class="callout">
-        <b>Node B (Slave)</b>
-        <ul>
-          <li>Role: Slave, Node Name: “UPS Node B”</li>
-          <li>Run a Modbus server/simulator on B (listen on 1502/502)</li>
-          <li>Use the same map (addresses, datatypes) you expect the master to read</li>
-          <li>Optionally enable Auto-Read on B for monitoring</li>
-        </ul>
-      </div>
-      <div class="callout">
-        <b>Gateway (TCP → RTU) case</b>
-        <ul>
-          <li>Default Device/IP: gateway IP; Port: gateway’s Modbus/TCP port</li>
-          <li>Set per-row <b>Unit</b> = RS-485 slave ID (1–247)</li>
-          <li>Leave IP override blank unless a row targets a different device/port</li>
-        </ul>
-      </div>
-      <div class="callout">
-        <b>Tips</b>
-        <ul>
-          <li>Use <b>Ping Device</b> to verify TCP reachability</li>
-          <li>Classic references (40001, 30001, …) are normalized to 0-based automatically</li>
-          <li>Endianness: ABCD (no swap), CDAB (word swap), BADC/DCBA (byte swaps)</li>
-        </ul>
-      </div>
+      <div class="callout"><b>Node A (Master)</b><ul>
+        <li>Role: Master, Name “UPS Node A”</li><li>Default Device/IP: Node B IP, Port 1502/502</li><li>Unit ID: 1</li><li>Uncheck Dry-run to write</li></ul></div>
+      <div class="callout"><b>Node B (Slave)</b><ul>
+        <li>Role: Slave, Name “UPS Node B”</li><li>Run Modbus server on B (1502/502)</li><li>Match the address map expected by A</li></ul></div>
+      <div class="callout"><b>Gateway (TCP→RTU)</b><ul>
+        <li>Device/IP = gateway IP; Port = gateway port</li><li>Per-row <b>Unit</b> = RS-485 slave ID (1–247)</li></ul></div>
+      <div class="callout"><b>Tips</b><ul>
+        <li>Use Ping to check reachability</li><li>Classic refs normalize to 0-based</li></ul></div>
     </div>
-    <div class="actions">
-      <button id="help-print">🖨️ Print</button>
-      <button id="help-close">Close</button>
-    </div>
+    <div class="actions"><button id="help-print">🖨️ Print</button><button id="help-close">Close</button></div>
   </div>
 </div>
 
@@ -335,33 +267,23 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
 
 <script>
 (function(){
-  // Tabs
   const tabBtns=document.querySelectorAll('.tabbar button');
   const tabs={coils:document.getElementById('tab-coils'),discrete:document.getElementById('tab-discrete'),holding:document.getElementById('tab-holding'),input:document.getElementById('tab-input')};
   tabBtns.forEach(b=>b.addEventListener('click',()=>{tabBtns.forEach(x=>x.classList.remove('active'));b.classList.add('active');const k=b.dataset.tab;Object.keys(tabs).forEach(t=>tabs[t].classList.toggle('hidden',t!==k));}));
 
-  // Hints: click-to-toggle (mobile friendly)
-  document.body.addEventListener('click',e=>{
-    const isHint=e.target.classList.contains('hint')?e.target:(e.target.closest('.hint'));
-    document.querySelectorAll('.hint.active').forEach(h=>{if(h!==isHint)h.classList.remove('active');});
-    if(isHint){isHint.classList.toggle('active');}
-  });
-
-  // Help modal
-  const helpModal=document.getElementById('help-modal');
-  document.getElementById('help-btn').onclick=()=>{helpModal.classList.add('show');helpModal.setAttribute('aria-hidden','false');};
-  document.getElementById('help-close').onclick=()=>{helpModal.classList.remove('show');helpModal.setAttribute('aria-hidden','true');}};
-  helpModal.addEventListener('click',e=>{if(e.target===helpModal){helpModal.classList.remove('show');helpModal.setAttribute('aria-hidden','true');}});
+  document.body.addEventListener('click',e=>{const h=e.target.closest('.hint');document.querySelectorAll('.hint.active').forEach(x=>{if(x!==h)x.classList.remove('active');});if(h)h.classList.toggle('active');});
+  const help=document.getElementById('help-modal');document.getElementById('help-btn').onclick=()=>{help.classList.add('show');help.setAttribute('aria-hidden','false');};
+  document.getElementById('help-close').onclick=()=>{help.classList.remove('show');help.setAttribute('aria-hidden','true');};
+  help.addEventListener('click',e=>{if(e.target===help){help.classList.remove('show');help.setAttribute('aria-hidden','true');}});
   document.getElementById('help-print').onclick=()=>{window.print();};
 
   const escCsv=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
   const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  // Table builders
-  function buildTable(table,base,rows,includeValue,includeDatatypeNotes=false){
+  function buildTable(table,base,rows,includeValue,includeDatatypeNotes){
     table.innerHTML='';
     const thead=document.createElement('thead');
-    let head='<tr><th>#</th><th class="ipcell">IP (override) <span class="hint"><span class="tip">Optional: host or host:port per row. If blank, uses Default Device/IP (+ Port).</span></span></th><th class="unitcell">Unit <span class="hint"><span class="tip">Modbus Unit ID. Leave blank to use Default Unit ID.</span></span></th><th>Address</th>';
+    let head='<tr><th>#</th><th class="ipcell">IP (override)</th><th class="unitcell">Unit</th><th>Address</th>';
     if(includeDatatypeNotes) head+='<th class="valuecell">Value (int/float or comma list)</th>';
     else if(includeValue) head+='<th class="valuecell">Value</th>';
     head+='<th class="notescell">Notes</th></tr>';
@@ -370,7 +292,7 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
     for(let i=0;i<rows;i++){
       const tr=document.createElement('tr');
       tr.innerHTML=`<td>${i+1}</td>
-        <td><input class="ipcell" placeholder="e.g. 192.168.1.21 or 192.168.1.21:1502"></td>
+        <td><input class="ipcell" placeholder="host or host:port"></td>
         <td><input type="number" min="0" max="247" class="unitcell"></td>
         <td><input type="number" min="0" value="${base+i}" class="gridnum"></td>
         ${includeValue?'<td class="valuecell"><input></td>':''}
@@ -390,16 +312,7 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
   document.getElementById('discrete-build').onclick=discreteBuild;
   document.getElementById('holding-build').onclick=holdingBuild;
   document.getElementById('input-build').onclick=inputBuild;
-
-  // Auto-build on load
-  coilsBuild(); discreteBuild(); holdingBuild(); inputBuild();
-
-  // Auto-rebuild when controls change
-  function rebuildOnChange(ids, buildFn){ ids.forEach(id=>{const el=document.getElementById(id); if(el){ el.addEventListener('change', buildFn); }}); }
-  rebuildOnChange(['coils-rows','coils-base','coils-mode'], coilsBuild);
-  rebuildOnChange(['discrete-rows','discrete-base'], discreteBuild);
-  rebuildOnChange(['holding-rows','holding-base','holding-mode','holding-dt','holding-endian','holding-scale'], holdingBuild);
-  rebuildOnChange(['input-rows','input-base','input-dt','input-endian','input-scale'], inputBuild);
+  coilsBuild();discreteBuild();holdingBuild();inputBuild();
 
   function rowsFromTable(tableEl){
     const rows=[]; tableEl.querySelectorAll('tbody tr').forEach(tr=>{
@@ -420,7 +333,6 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
     return a;
   }
 
-  // Node meta + settings
   const node_name=document.getElementById('node_name'), node_role=document.getElementById('node_role'), save_status=document.getElementById('save-status');
   const ip_default=document.getElementById('ip'), port=document.getElementById('port'), unit_id=document.getElementById('unit_id'), timeout=document.getElementById('timeout'), dry=document.getElementById('dry');
   const auto=document.getElementById('auto'), autoint=document.getElementById('autoint');
@@ -444,17 +356,14 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
     catch(_){save_status.textContent='Save failed';} setTimeout(()=>save_status.textContent='',1500);
   };
 
-  function saveDefaultPort(){ const p=parseInt(port.value,10); if(!isNaN(p)) localStorage.setItem(LS_PORT,String(p)); }
-  port.addEventListener('change',saveDefaultPort);
+  port.addEventListener('change',()=>{ const p=parseInt(port.value,10); if(!isNaN(p)) localStorage.setItem(LS_PORT,String(p)); });
 
-  // Auto-Read
   let autoTimer=null;
   function startAuto(){ stopAuto(); const secs=Math.max(0.2,parseFloat(autoint.value)||2); autoTimer=setInterval(()=>read_btn.click(), secs*1000); localStorage.setItem(LS_AUTO,'1'); localStorage.setItem(LS_AUTOS,String(secs)); }
   function stopAuto(){ if(autoTimer){clearInterval(autoTimer); autoTimer=null;} localStorage.setItem(LS_AUTO,'0'); }
   auto.addEventListener('change',()=>{ if(auto.checked) startAuto(); else stopAuto(); });
   autoint.addEventListener('change',()=>{ if(auto.checked) startAuto(); });
 
-  // Ping Device
   async function pingDevice(){
     const ip=(ip_default.value||'').trim();
     const p=parseInt(port.value,10)||502;
@@ -470,7 +379,6 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
   }
   ping_btn.onclick=pingDevice;
 
-  // Build ops payload for /run
   function normalizeHostPort(raw, defPort){ if(!raw) return ''; return raw.includes(':')?raw:String(raw)+':'+String(defPort); }
 
   function buildOps(which){
@@ -538,18 +446,12 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
     }catch(err){status.textContent='Error: '+(err?.message||err);}
   }
   const read_btn=document.getElementById('read-btn'); const write_btn=document.getElementById('write-btn');
-  read_btn.onclick=()=>postOps('read');
-  write_btn.onclick=()=>postOps('write');
+  read_btn.onclick=()=>postOps('read'); write_btn.onclick=()=>postOps('write');
 })();
 </script></body></html>
 """
 
-# Substitute logo URL safely (no f-string)
-INDEX_HTML = INDEX_HTML_RAW.replace("__LOGO_URL__", LOGO_URL)
-
-# -----------------------------------------------------------------------------
-# Routes
-# -----------------------------------------------------------------------------
+# ---------- Routes ----------
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(INDEX_HTML)
@@ -557,6 +459,15 @@ async def index():
 @app.get("/favicon.ico")
 async def favicon():
     return Response(status_code=204)
+
+# Serve /logo.png directly from assets (fallback)
+@app.get("/logo.png")
+def logo_png():
+    p = STATIC_DIR / "Braeden_Logo.png"
+    if p.exists():
+        return FileResponse(str(p), media_type="image/png")
+    # fallback to a 1x1 transparent if missing
+    return Response(content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82", media_type="image/png")
 
 @app.get("/node")
 async def get_node():
@@ -585,69 +496,20 @@ async def ping_device(req: Request):
     default_port = int(data.get("port", 502))
     timeout = float(data.get("timeout", 1.5))
     host, port = parse_host_port(ip or "127.0.0.1", default_port=default_port)
-
-    ok = False
-    err = ""
+    ok = False; err = ""
     client = ModbusTcpClient(host=host, port=port, timeout=timeout)
     try:
         ok = client.connect()
-        if not ok:
-            err = "connect failed"
+        if not ok: err = "connect failed"
     except Exception as e:
-        ok = False
-        err = f"{type(e).__name__}: {e}"
+        ok = False; err = f"{type(e).__name__}: {e}"
     finally:
-        try:
-            client.close()
-        except Exception:
-            pass
+        try: client.close()
+        except Exception: pass
     return {"ok": ok, "host": host, "port": port, "timeout": timeout, "error": err}
 
 @app.post("/run")
 async def run_mapping(request: Request):
     payload = await request.json()
-    rows: List[Dict[str, Any]] = payload.get("rows") or []  # not used directly; portal sends "ops"
     timeout = float(payload.get("timeout", 3.0))
-    dry = bool(payload.get("dry", False))
-    node = payload.get("node") or {}
-    maybe_name = (node.get("name") or "").strip()
-    maybe_role = (node.get("role") or "").strip()
-    changed = False
-    if maybe_name:
-        app.state.node_name = maybe_name
-        changed = True
-    if maybe_role in ("Master", "Slave"):
-        app.state.node_role = maybe_role
-        changed = True
-    if changed:
-        _save_node_config(app.state.node_name, app.state.node_role)
-
-    # New schema (ops list) from the portal
-    ops: List[Dict[str, Any]] = payload.get("ops") or []
-    if not ops:
-        raise HTTPException(status_code=400, detail="No operations provided")
-
-    clients: Dict[Tuple[str, float], ModbusTcpClient] = {}
-    results: List[Dict[str, Any]] = []
-    try:
-        for op in ops:
-            res = perform_row(op, clients, timeout=timeout, dry=dry)
-            results.append({**op, **res})
-    finally:
-        for c in list(clients.values()):
-            try:
-                c.close()
-            except Exception:
-                pass
-
-    columns = sorted({k for r in results for k in r.keys()})
-    return {"columns": columns, "rows": results}
-
-# --- Optional debug route (remove if you want) ---
-@app.get("/debug/static")
-def debug_static():
-    try:
-        files = [p.name for p in STATIC_DIR.iterdir()]
-    except Exception as e:
-        files = [f"<error reading dir: {e}>"]
-    return {"app_dir": str(APP_DIR), "static_dir": str(STATIC_DIR), "files": files}
+    dry = bool(payload.get("dry
