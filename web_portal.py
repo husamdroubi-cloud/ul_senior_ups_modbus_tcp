@@ -11,11 +11,20 @@ from pymodbus.client import ModbusTcpClient
 from modbus_portal_cli import perform_row, parse_host_port
 import json, os
 
+# -----------------------------------------------------------------------------
+# Paths & static
+# -----------------------------------------------------------------------------
 APP_DIR = Path(__file__).resolve().parent
-CONF_PATH = APP_DIR / "node_config.json"
+STATIC_DIR = APP_DIR / "assets"
+STATIC_DIR.mkdir(exist_ok=True)
 
-# Default to local asset; can still override with env LOGO_URL if desired.
+# Default logo path served locally; can be overridden with env LOGO_URL if desired
 LOGO_URL = os.getenv("LOGO_URL", "/assets/Braeden_Logo.png")
+
+# -----------------------------------------------------------------------------
+# Node config (file with env fallback)
+# -----------------------------------------------------------------------------
+CONF_PATH = APP_DIR / "node_config.json"
 
 def _load_node_config() -> Dict[str, str]:
     if CONF_PATH.exists():
@@ -43,17 +52,22 @@ def _save_node_config(name: str, role: str) -> bool:
     except Exception:
         return False
 
+# -----------------------------------------------------------------------------
+# App & middleware
+# -----------------------------------------------------------------------------
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Serve everything in the project directory (repo root) under /assets
-app.mount("/assets", StaticFiles(directory=APP_DIR), name="assets")
+# Serve files from ./assets at /assets
+app.mount("/assets", StaticFiles(directory=str(STATIC_DIR)), name="assets")
 
 _cfg = _load_node_config()
 app.state.node_name = _cfg["name"]
 app.state.node_role = _cfg["role"]
 
-# ---------------- HTML (raw string; no f-strings) ----------------
+# -----------------------------------------------------------------------------
+# HTML (raw string; no f-strings). '__LOGO_URL__' gets replaced below.
+# -----------------------------------------------------------------------------
 INDEX_HTML_RAW = r"""
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Team 1 High Specification Smart UPS - UL/Braeden</title>
@@ -533,7 +547,9 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
 # Substitute logo URL safely (no f-string)
 INDEX_HTML = INDEX_HTML_RAW.replace("__LOGO_URL__", LOGO_URL)
 
-# ---------------- Routes ----------------
+# -----------------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(INDEX_HTML)
@@ -590,7 +606,7 @@ async def ping_device(req: Request):
 @app.post("/run")
 async def run_mapping(request: Request):
     payload = await request.json()
-    rows: List[Dict[str, Any]] = payload.get("rows") or []
+    rows: List[Dict[str, Any]] = payload.get("rows") or []  # not used directly; portal sends "ops"
     timeout = float(payload.get("timeout", 3.0))
     dry = bool(payload.get("dry", False))
     node = payload.get("node") or {}
@@ -605,23 +621,18 @@ async def run_mapping(request: Request):
         changed = True
     if changed:
         _save_node_config(app.state.node_name, app.state.node_role)
-    if not isinstance(rows, list) or not rows:
-        raise HTTPException(status_code=400, detail="No rows provided")
+
+    # New schema (ops list) from the portal
+    ops: List[Dict[str, Any]] = payload.get("ops") or []
+    if not ops:
+        raise HTTPException(status_code=400, detail="No operations provided")
 
     clients: Dict[Tuple[str, float], ModbusTcpClient] = {}
     results: List[Dict[str, Any]] = []
     try:
-        for r in rows:
-            norm = {
-                "node_name": r.get("node_name", app.state.node_name),
-                "node_role": r.get("node_role", app.state.node_role),
-                "device": r.get("device", ""), "ip": r.get("ip", ""), "unit_id": r.get("unit_id", 1),
-                "function": r.get("function", ""), "address": r.get("address", 0), "count": r.get("count", 1),
-                "datatype": r.get("datatype", "int16"), "rw": r.get("rw", "R"), "scale": r.get("scale", 1.0),
-                "endianness": r.get("endianness", "ABCD"), "value": r.get("value", ""), "notes": r.get("notes", "")
-            }
-            res = perform_row(norm, clients, timeout=timeout, dry=dry)
-            results.append({**norm, **res})
+        for op in ops:
+            res = perform_row(op, clients, timeout=timeout, dry=dry)
+            results.append({**op, **res})
     finally:
         for c in list(clients.values()):
             try:
@@ -631,3 +642,12 @@ async def run_mapping(request: Request):
 
     columns = sorted({k for r in results for k in r.keys()})
     return {"columns": columns, "rows": results}
+
+# --- Optional debug route (remove if you want) ---
+@app.get("/debug/static")
+def debug_static():
+    try:
+        files = [p.name for p in STATIC_DIR.iterdir()]
+    except Exception as e:
+        files = [f"<error reading dir: {e}>"]
+    return {"app_dir": str(APP_DIR), "static_dir": str(STATIC_DIR), "files": files}
