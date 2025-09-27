@@ -1,4 +1,4 @@
-# web_portal.py — Portal with info tooltips (ⓘ), Help modal + Print, Ping Device, Auto-build tables, etc.
+# web_portal.py — 3-line title + right-aligned logo, light-blue (i) icons, tooltips, Help modal, Ping, auto-build
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +10,13 @@ import json, os
 
 APP_DIR = Path(__file__).resolve().parent
 CONF_PATH = APP_DIR / "node_config.json"
+
+# ---- Set your logo URL here (or via env var LOGO_URL) ----
+LOGO_URL = os.getenv(
+    "LOGO_URL",
+    # Update this to a valid image in your repo if you like:
+    "https://raw.githubusercontent.com/husamdroubi-cloud/ul_senior_ups_modbus_tcp/main/assets/braeden_logo.png"
+)
 
 def _load_node_config() -> Dict[str, str]:
     if CONF_PATH.exists():
@@ -44,98 +51,113 @@ _cfg = _load_node_config()
 app.state.node_name = _cfg["name"]
 app.state.node_role = _cfg["role"]
 
-INDEX_HTML = r"""
+INDEX_HTML = rf"""
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Team 1 High Specification Smart UPS - UL/Braeden</title>
 <style>
-:root{color-scheme:light dark}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.35}
-header{margin-bottom:12px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-h2{margin:0 0 4px 0;padding:6px 10px;background:#e8e6ff;border-radius:10px;display:inline-block}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.card{border:1px solid #ddd;border-radius:12px;padding:10px;margin:10px 0}
-.section{margin-top:10px}
-label{display:inline-flex;gap:6px;align-items:center}
-input,select,button{font-size:14px;padding:3px 6px}
-button.icon{padding:2px 8px}
-input[type="number"]{width:6em}
-table{border-collapse:collapse;border-spacing:0;width:auto;max-width:100%;margin-top:6px;table-layout:auto}
-th,td{border:1px solid #eee;padding:2px 4px;font-size:13px;vertical-align:top;white-space:nowrap}
-th{background:#fafafa;text-align:left}
-td input{width:100%}
-.gridnum{width:5.5em}
-.ipcell{width:12em}
-.unitcell{width:4em}
-.valuecell{width:10em}
-.notescell{min-width:64em}
-.notescell input{width:100%}
-.ok{color:#0a7a2f;font-weight:600}
-.err{color:#b00020;font-weight:600}
-.muted{color:#666;font-size:12px}
-.tabbar{display:flex;gap:8px;margin:6px 0}
-.tabbar button{padding:6px 10px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
-.tabbar button.active{background:#e8f0ff;border-color:#7aa2ff}
-.hidden{display:none}
-.badge{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}
+:root{{color-scheme:light dark}}
+body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.35}}
+header{{margin-bottom:12px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}}
+.brand-left{{display:flex;flex-direction:column;gap:4px;min-width:0}}
+.brand-line{{display:inline-block;padding:6px 10px;background:#e8e6ff;border-radius:10px;max-width:100%}}
+.brand1{{font-size:18px;font-weight:700}}
+.brand2{{font-size:16px;font-weight:600}}
+.brand3{{font-size:14px;font-weight:600}}
+.brand-right img{{max-height:54px;object-fit:contain}}
+.row{{display:flex;gap:8px;align-items:center;flex-wrap:wrap}}
+.card{{border:1px solid #ddd;border-radius:12px;padding:10px;margin:10px 0}}
+.section{{margin-top:10px}}
+label{{display:inline-flex;gap:6px;align-items:center}}
+input,select,button{{font-size:14px;padding:3px 6px}}
+button.icon{{padding:2px 8px}}
+input[type="number"]{{width:6em}}
+table{{border-collapse:collapse;border-spacing:0;width:auto;max-width:100%;margin-top:6px;table-layout:auto}}
+th,td{{border:1px solid #eee;padding:2px 4px;font-size:13px;vertical-align:top;white-space:nowrap}}
+th{{background:#fafafa;text-align:left}}
+td input{{width:100%}}
+.gridnum{{width:5.5em}}
+.ipcell{{width:12em}}
+.unitcell{{width:4em}}
+.valuecell{{width:10em}}
+.notescell{{min-width:64em}}
+.notescell input{{width:100%}}
+.ok{{color:#0a7a2f;font-weight:600}}
+.err{{color:#b00020;font-weight:600}}
+.muted{{color:#666;font-size:12px}}
+.tabbar{{display:flex;gap:8px;margin:6px 0}}
+.tabbar button{{padding:6px 10px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}}
+.tabbar button.active{{background:#e8f0ff;border-color:#7aa2ff}}
+.hidden{{display:none}}
+.badge{{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}}
 
-/* Info (ⓘ) tooltip */
-.hint{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #888;color:#555;background:#fff;font-size:12px;cursor:help}
-.hint::before{content:"ⓘ";line-height:1}
-.hint:hover,.hint.active{background:#eef5ff;border-color:#5d91ff}
-.hint .tip{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:420px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}
-.hint .tip a{color:#9ecbff}
-.hint .tip:after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:7px solid transparent;border-top-color:#111}
-.hint:hover .tip,.hint.active .tip{opacity:1;pointer-events:auto}
+/* Info (ⓘ) tooltip — light blue filled */
+.hint{{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #7aa2ff;color:#0b3b8c;background:#dbeafe;font-size:12px;cursor:help}}
+.hint::before{{content:"ⓘ";line-height:1}}
+.hint:hover,.hint.active{{background:#c7dcff;border-color:#5d91ff}}
+.hint .tip{{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:420px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}}
+.hint .tip a{{color:#9ecbff}}
+.hint .tip:after{{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:7px solid transparent;border-top-color:#111}}
+.hint:hover .tip,.hint.active .tip{{opacity:1;pointer-events:auto}}
 
 /* Help modal */
-#help-btn{margin-left:8px}
-#help-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:9999}
-#help-modal.show{display:flex}
-#help-card{background:#fff;color:#111;max-width:900px;width:100%;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);padding:16px}
-#help-card h3{margin:0 0 8px 0}
-#help-card .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
-#help-card .grid{display:grid;grid-template-columns:1fr;gap:8px}
-@media (min-width:800px){#help-card .grid{grid-template-columns:1fr 1fr}}
-#help-card .callout{border-left:4px solid #7aa2ff;background:#eef5ff;padding:8px;border-radius:8px}
+#help-btn{{margin-left:8px}}
+#help-modal{{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:9999}}
+#help-modal.show{{display:flex}}
+#help-card{{background:#fff;color:#111;max-width:900px;width:100%;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);padding:16px}}
+#help-card h3{{margin:0 0 8px 0}}
+#help-card .actions{{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}}
+#help-card .grid{{display:grid;grid-template-columns:1fr;gap:8px}}
+@media (min-width:800px){{#help-card .grid{{grid-template-columns:1fr 1fr}}}}
+#help-card .callout{{border-left:4px solid #7aa2ff;background:#eef5ff;padding:8px;border-radius:8px}}
 
 /* Print the help card nicely */
-@media print{
-  body *{visibility:hidden}
-  #help-card, #help-card *{visibility:visible}
-  #help-card{position:absolute;inset:auto;left:0;top:0;width:100%;box-shadow:none}
-}
+@media print{{
+  body *{{visibility:hidden}}
+  #help-card, #help-card *{{visibility:visible}}
+  #help-card{{position:absolute;inset:auto;left:0;top:0;width:100%;box-shadow:none}}
+}}
 </style></head><body>
+
 <header>
-  <div>
-    <h2>Team 1 High Specification Smart UPS - UL/Braeden</h2>
-    <div class="muted">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>. You may enter classic Modbus reference numbers (Coils 1-…, Discrete 10001-…, Input 30001-…, Holding 40001-…). The portal normalizes to <b>0-based</b> before sending.</div>
+  <div class="brand-left">
+    <div class="brand-line brand1">Team 1 High Specification Smart UPS Senior Project</div>
+    <div class="brand-line brand2">ModBus/TCP Polling and Simulation Portal</div>
+    <div class="brand-line brand3">University of Louisiana &amp; Braeden Engineering Internship Program</div>
+    <div class="muted" style="margin-top:6px">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>. You may enter classic Modbus reference numbers (Coils 1–, Discrete 10001–, Input 30001–, Holding 40001–). The portal normalizes to <b>0-based</b> before sending.</div>
   </div>
-  <div>
-    <button id="help-btn" class="icon" title="Quick setup help">❓ Help</button>
+  <div class="brand-right">
+    <img src="{LOGO_URL}" alt="Braeden logo" onerror="this.style.display='none'"/>
+    <div style="text-align:right;margin-top:6px">
+      <button id="help-btn" class="icon" title="Quick setup help">❓ Help</button>
+    </div>
   </div>
 </header>
 
 <div class="card">
   <div class="row">
     <label>Node Name <input id="node_name" placeholder="e.g. UPS Node A"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Human-friendly name for this node. Shown at /node and /node/name.\nExamples: “UPS Node A”, “Gateway-01”.</span></span>
+    <span class="hint" tabindex="0"><span class="tip">Human-friendly name for this node. Shown at /node and /node/name.
+Examples: “UPS Node A”, “Gateway-01”.</span></span>
 
     <label>Role
       <select id="node_role"><option>Master</option><option>Slave</option></select>
     </label>
-    <span class="hint" tabindex="0"><span class="tip">Master initiates reads/writes. Slave typically exposes values.\nYou can change at any time; it’s purely metadata for now.</span></span>
+    <span class="hint" tabindex="0"><span class="tip">Master initiates reads/writes. Slave typically exposes values.
+You can change at any time; it’s metadata for now.</span></span>
     <span class="muted">(polled at <code>/node</code> &amp; <code>/node/name</code>)</span>
   </div>
 
   <div class="row">
     <label>Default Device/IP <input id="ip" placeholder="192.168.1.10 or host:port"/></label>
-    <span class="hint" tabindex="0"><span class="tip">TCP target for all rows unless a row provides an override.\nUse host or host:port (e.g. 192.168.1.21:1502).</span></span>
+    <span class="hint" tabindex="0"><span class="tip">TCP target for all rows unless a row provides an override.
+Use host or host:port (e.g. 192.168.1.21:1502).</span></span>
 
     <label>Default <span class="badge">Port</span> <input id="port" type="number" min="1" max="65535" value="502" title="For LAN sims use 1502"/></label>
     <span class="hint" tabindex="0"><span class="tip">Modbus/TCP port. Common: 502. Simulators often use 1502.</span></span>
 
     <label>Default Unit ID <input id="unit_id" type="number" min="0" max="247" value="1"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Modbus Unit Identifier (slave ID). For TCP-only devices usually 1.\nThrough TCP→RTU gateways it’s the RS-485 device ID (1–247).</span></span>
+    <span class="hint" tabindex="0"><span class="tip">Modbus Unit Identifier (slave ID). For TCP-only devices usually 1.
+Through TCP→RTU gateways it’s the RS-485 device ID (1–247).</span></span>
 
     <label>Timeout (s) <input id="timeout" type="number" step="0.1" min="0.1" value="3.0"/></label>
     <span class="hint" tabindex="0"><span class="tip">Network timeout for each request. Increase on slow links.</span></span>
@@ -175,7 +197,8 @@ td input{width:100%}
           <option value="write_multi">Write Multiple Coils (comma/semicolon list)</option>
         </select>
       </label>
-      <span class="hint" tabindex="0"><span class="tip">Classic coil addresses start at 1.\nFor multi-write put values like “1,0,1”.</span></span>
+      <span class="hint" tabindex="0"><span class="tip">Classic coil addresses start at 1.
+For multi-write put values like “1,0,1”.</span></span>
       <button id="coils-build">Build Table</button>
     </div>
     <table id="coils-table"></table>
@@ -209,7 +232,8 @@ td input{width:100%}
         <select id="holding-endian"><option>ABCD</option><option>BADC</option><option>CDAB</option><option>DCBA</option></select>
       </label>
       <label>Scale <input id="holding-scale" class="gridnum" type="number" step="0.01" value="1.0"/></label>
-      <span class="hint" tabindex="0"><span class="tip">Use int32/float32 for two-register values. Endianness controls word/byte order.\nScale lets you store raw units (e.g., *10) but display engineering units.</span></span>
+      <span class="hint" tabindex="0"><span class="tip">Use int32/float32 for two-register values. Endianness controls word/byte order.
+Scale lets you store raw units (e.g., *10) but display engineering units.</span></span>
       <button id="holding-build">Build Table</button>
     </div>
     <table id="holding-table"></table>
@@ -299,7 +323,7 @@ td input{width:100%}
   const tabs={coils:document.getElementById('tab-coils'),discrete:document.getElementById('tab-discrete'),holding:document.getElementById('tab-holding'),input:document.getElementById('tab-input')};
   tabBtns.forEach(b=>b.addEventListener('click',()=>{tabBtns.forEach(x=>x.classList.remove('active'));b.classList.add('active');const k=b.dataset.tab;Object.keys(tabs).forEach(t=>tabs[t].classList.toggle('hidden',t!==k));}));
 
-  // Hints: allow click-to-toggle (mobile friendly)
+  // Hints: click-to-toggle (mobile friendly)
   document.body.addEventListener('click',e=>{
     const isHint=e.target.classList.contains('hint')?e.target:(e.target.closest('.hint'));
     document.querySelectorAll('.hint.active').forEach(h=>{if(h!==isHint)h.classList.remove('active');});
@@ -390,7 +414,7 @@ td input{width:100%}
   const LS_NAME='ups_node_name', LS_ROLE='ups_node_role', LS_AUTO='ups_auto_on', LS_AUTOS='ups_auto_secs', LS_PORT='ups_default_port';
 
   async function loadNodeMeta(){
-    try{const r=await fetch('/node'); if(r.ok){const j=await r.json(); node_name.value=j.name??''; node_role.value=j.role??'Master';}}catch(_){}
+    try{{const r=await fetch('/node'); if(r.ok){{const j=await r.json(); node_name.value=j.name??''; node_role.value=j.role??'Master';}}}}catch(_){}
     const rn=localStorage.getItem(LS_NAME), rr=localStorage.getItem(LS_ROLE);
     if(rn) node_name.value=rn; if(rr==='Master'||rr==='Slave') node_role.value=rr;
     const savedPort=localStorage.getItem(LS_PORT); if(savedPort && !isNaN(savedPort)) port.value=Number(savedPort);
@@ -401,7 +425,7 @@ td input{width:100%}
   document.getElementById('save-meta').onclick=async ()=>{
     const nn=node_name.value.trim(), rl=node_role.value; save_status.textContent='Saving...';
     localStorage.setItem(LS_NAME, nn); localStorage.setItem(LS_ROLE, rl);
-    try{const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn,role:rl})}); save_status.textContent=r.ok?'Saved':'Save failed';}
+    try{{const r=await fetch('/config',{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:nn,role:rl}})}); save_status.textContent=r.ok?'Saved':'Save failed';}}
     catch(_){save_status.textContent='Save failed';} setTimeout(()=>save_status.textContent='',1500);
   };
 
@@ -478,7 +502,7 @@ td input{width:100%}
       ops.push({node_name:nodeName,node_role:nodeRole,device:"INPUT",ip,unit_id:unit,function:"read_input",address:addr0,count:iCount,datatype:iDT,rw:"R",scale:iScale,endianness:iEnd,value:"",notes:r.notes||""});
     });
 
-    return {ops:ops, timeout:tmo, dry:isDry, node:{name:nodeName, role:nodeRole}};
+    return {{ops:ops, timeout:tmo, dry:isDry, node:{{name:nodeName, role:nodeRole}}}};
   }
 
   function renderResults(columns,rows){
@@ -487,15 +511,13 @@ td input{width:100%}
     for(const r of rows){ html+='<tr>'+columns.map(c=>{const v=r[c];const cls=(c.toLowerCase()==='ok')?(v?'ok':'err'):'';const t=(typeof v==='object')?escHtml(JSON.stringify(v)):escHtml(v);return '<td class="'+cls+'">'+t+'</td>';}).join('')+'</tr>'; }
     html+='</tbody></table></div>'; div.innerHTML=html;
     const hdr=columns.map(escCsv).join(','), body=rows.map(row=>columns.map(c=>escCsv(typeof row[c]==='object'?JSON.stringify(row[c]):(row[c]??''))).join(',')).join('\n');
-    const blob=new Blob([hdr+'\n'+body],{type:'text/csv'}), url=URL.createObjectURL(blob); const a=document.getElementById('download'); a.href=url; a.style.display='inline-block';
+    const blob=new Blob([hdr+'\n'+body],{{type:'text/csv'}}), url=URL.createObjectURL(blob); const a=document.getElementById('download'); a.href=url; a.style.display='inline-block';
   }
 
   async function postOps(which){
     const payload=buildOps(which); const status=document.getElementById('status'); status.textContent=(which==='read'?'Reading ':'Writing ')+payload.ops.length+' operations...';
-    try{const resp=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'same-origin'});
-      if(!resp.ok){const t=await resp.text().catch(()=> ''); throw new Error('HTTP '+resp.status+' '+(t||''));}
-      const data=await resp.json(); renderResults(data.columns||[],data.rows||[]); status.textContent='Done.';}
-    catch(err){status.textContent='Error: '+(err?.message||err);}
+    try{{const resp=await fetch('/run',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload),credentials:'same-origin'}}); if(!resp.ok){{const t=await resp.text().catch(()=> ''); throw new Error('HTTP '+resp.status+' '+(t||''));}} const data=await resp.json(); renderResults(data.columns||[],data.rows||[]); status.textContent='Done.';}}
+    catch(err){{status.textContent='Error: '+(err?.message||err);}}
   }
   const read_btn=document.getElementById('read-btn'); const write_btn=document.getElementById('write-btn');
   read_btn.onclick=()=>postOps('read');
