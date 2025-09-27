@@ -1,7 +1,10 @@
-# web_portal.py — 3-line title + right-aligned logo, light-blue (i) icons, tooltips, Help modal, Ping, auto-build
+# web_portal.py — serves logo from /assets, raw HTML string (no f-string), blue (i) icons,
+# 3-line title with right-aligned logo, Help modal + Print, Ping Device, Auto-build tables, /run orchestration.
+
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from typing import List, Dict, Any, Tuple
 from pathlib import Path
 from pymodbus.client import ModbusTcpClient
@@ -11,12 +14,8 @@ import json, os
 APP_DIR = Path(__file__).resolve().parent
 CONF_PATH = APP_DIR / "node_config.json"
 
-# ---- Set your logo URL here (or via env var LOGO_URL) ----
-LOGO_URL = os.getenv(
-    "LOGO_URL",
-    # Update this to a valid image in your repo if you like:
-    "https://raw.githubusercontent.com/husamdroubi-cloud/ul_senior_ups_modbus_tcp/main/assets/braeden_logo.png"
-)
+# Default to local asset; can still override with env LOGO_URL if desired.
+LOGO_URL = os.getenv("LOGO_URL", "/assets/Braeden_Logo.png")
 
 def _load_node_config() -> Dict[str, str]:
     if CONF_PATH.exists():
@@ -47,75 +46,79 @@ def _save_node_config(name: str, role: str) -> bool:
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# Serve everything in the project directory (repo root) under /assets
+app.mount("/assets", StaticFiles(directory=APP_DIR), name="assets")
+
 _cfg = _load_node_config()
 app.state.node_name = _cfg["name"]
 app.state.node_role = _cfg["role"]
 
-INDEX_HTML = rf"""
+# ---------------- HTML (raw string; no f-strings) ----------------
+INDEX_HTML_RAW = r"""
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Team 1 High Specification Smart UPS - UL/Braeden</title>
 <style>
-:root{{color-scheme:light dark}}
-body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.35}}
-header{{margin-bottom:12px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}}
-.brand-left{{display:flex;flex-direction:column;gap:4px;min-width:0}}
-.brand-line{{display:inline-block;padding:6px 10px;background:#e8e6ff;border-radius:10px;max-width:100%}}
-.brand1{{font-size:18px;font-weight:700}}
-.brand2{{font-size:16px;font-weight:600}}
-.brand3{{font-size:14px;font-weight:600}}
-.brand-right img{{max-height:54px;object-fit:contain}}
-.row{{display:flex;gap:8px;align-items:center;flex-wrap:wrap}}
-.card{{border:1px solid #ddd;border-radius:12px;padding:10px;margin:10px 0}}
-.section{{margin-top:10px}}
-label{{display:inline-flex;gap:6px;align-items:center}}
-input,select,button{{font-size:14px;padding:3px 6px}}
-button.icon{{padding:2px 8px}}
-input[type="number"]{{width:6em}}
-table{{border-collapse:collapse;border-spacing:0;width:auto;max-width:100%;margin-top:6px;table-layout:auto}}
-th,td{{border:1px solid #eee;padding:2px 4px;font-size:13px;vertical-align:top;white-space:nowrap}}
-th{{background:#fafafa;text-align:left}}
-td input{{width:100%}}
-.gridnum{{width:5.5em}}
-.ipcell{{width:12em}}
-.unitcell{{width:4em}}
-.valuecell{{width:10em}}
-.notescell{{min-width:64em}}
-.notescell input{{width:100%}}
-.ok{{color:#0a7a2f;font-weight:600}}
-.err{{color:#b00020;font-weight:600}}
-.muted{{color:#666;font-size:12px}}
-.tabbar{{display:flex;gap:8px;margin:6px 0}}
-.tabbar button{{padding:6px 10px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}}
-.tabbar button.active{{background:#e8f0ff;border-color:#7aa2ff}}
-.hidden{{display:none}}
-.badge{{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}}
+:root{color-scheme:light dark}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.35}
+header{margin-bottom:12px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.brand-left{display:flex;flex-direction:column;gap:4px;min-width:0}
+.brand-line{display:inline-block;padding:6px 10px;background:#e8e6ff;border-radius:10px;max-width:100%}
+.brand1{font-size:18px;font-weight:700}
+.brand2{font-size:16px;font-weight:600}
+.brand3{font-size:14px;font-weight:600}
+.brand-right img{max-height:54px;object-fit:contain}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.card{border:1px solid #ddd;border-radius:12px;padding:10px;margin:10px 0}
+.section{margin-top:10px}
+label{display:inline-flex;gap:6px;align-items:center}
+input,select,button{font-size:14px;padding:3px 6px}
+button.icon{padding:2px 8px}
+input[type="number"]{width:6em}
+table{border-collapse:collapse;border-spacing:0;width:auto;max-width:100%;margin-top:6px;table-layout:auto}
+th,td{border:1px solid #eee;padding:2px 4px;font-size:13px;vertical-align:top;white-space:nowrap}
+th{background:#fafafa;text-align:left}
+td input{width:100%}
+.gridnum{width:5.5em}
+.ipcell{width:12em}
+.unitcell{width:4em}
+.valuecell{width:10em}
+.notescell{min-width:64em}
+.notescell input{width:100%}
+.ok{color:#0a7a2f;font-weight:600}
+.err{color:#b00020;font-weight:600}
+.muted{color:#666;font-size:12px}
+.tabbar{display:flex;gap:8px;margin:6px 0}
+.tabbar button{padding:6px 10px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
+.tabbar button.active{background:#e8f0ff;border-color:#7aa2ff}
+.hidden{display:none}
+.badge{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}
 
-/* Info (ⓘ) tooltip — light blue filled */
-.hint{{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #7aa2ff;color:#0b3b8c;background:#dbeafe;font-size:12px;cursor:help}}
-.hint::before{{content:"ⓘ";line-height:1}}
-.hint:hover,.hint.active{{background:#c7dcff;border-color:#5d91ff}}
-.hint .tip{{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:420px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}}
-.hint .tip a{{color:#9ecbff}}
-.hint .tip:after{{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:7px solid transparent;border-top-color:#111}}
-.hint:hover .tip,.hint.active .tip{{opacity:1;pointer-events:auto}}
+/* Info (ⓘ) tooltip — ALWAYS light blue filled */
+.hint{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #7aa2ff;color:#0b3b8c;background:#dbeafe;font-size:12px;cursor:help}
+.hint::before{content:"ⓘ";line-height:1}
+.hint:hover,.hint.active{background:#c7dcff;border-color:#5d91ff}
+.hint .tip{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:420px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}
+.hint .tip a{color:#9ecbff}
+.hint .tip:after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:7px solid transparent;border-top-color:#111}
+.hint:hover .tip,.hint.active .tip{opacity:1;pointer-events:auto}
 
 /* Help modal */
-#help-btn{{margin-left:8px}}
-#help-modal{{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:9999}}
-#help-modal.show{{display:flex}}
-#help-card{{background:#fff;color:#111;max-width:900px;width:100%;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);padding:16px}}
-#help-card h3{{margin:0 0 8px 0}}
-#help-card .actions{{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}}
-#help-card .grid{{display:grid;grid-template-columns:1fr;gap:8px}}
-@media (min-width:800px){{#help-card .grid{{grid-template-columns:1fr 1fr}}}}
-#help-card .callout{{border-left:4px solid #7aa2ff;background:#eef5ff;padding:8px;border-radius:8px}}
+#help-btn{margin-left:8px}
+#help-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:9999}
+#help-modal.show{display:flex}
+#help-card{background:#fff;color:#111;max-width:900px;width:100%;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);padding:16px}
+#help-card h3{margin:0 0 8px 0}
+#help-card .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+#help-card .grid{display:grid;grid-template-columns:1fr;gap:8px}
+@media (min-width:800px){#help-card .grid{grid-template-columns:1fr 1fr}}
+#help-card .callout{border-left:4px solid #7aa2ff;background:#eef5ff;padding:8px;border-radius:8px}
 
 /* Print the help card nicely */
-@media print{{
-  body *{{visibility:hidden}}
-  #help-card, #help-card *{{visibility:visible}}
-  #help-card{{position:absolute;inset:auto;left:0;top:0;width:100%;box-shadow:none}}
-}}
+@media print{
+  body *{visibility:hidden}
+  #help-card, #help-card *{visibility:visible}
+  #help-card{position:absolute;inset:auto;left:0;top:0;width:100%;box-shadow:none}
+}
 </style></head><body>
 
 <header>
@@ -126,7 +129,7 @@ td input{{width:100%}}
     <div class="muted" style="margin-top:6px">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>. You may enter classic Modbus reference numbers (Coils 1–, Discrete 10001–, Input 30001–, Holding 40001–). The portal normalizes to <b>0-based</b> before sending.</div>
   </div>
   <div class="brand-right">
-    <img src="{LOGO_URL}" alt="Braeden logo" onerror="this.style.display='none'"/>
+    <img src="__LOGO_URL__" alt="Braeden logo" onerror="this.style.display='none'"/>
     <div style="text-align:right;margin-top:6px">
       <button id="help-btn" class="icon" title="Quick setup help">❓ Help</button>
     </div>
@@ -333,7 +336,7 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
   // Help modal
   const helpModal=document.getElementById('help-modal');
   document.getElementById('help-btn').onclick=()=>{helpModal.classList.add('show');helpModal.setAttribute('aria-hidden','false');};
-  document.getElementById('help-close').onclick=()=>{helpModal.classList.remove('show');helpModal.setAttribute('aria-hidden','true');};
+  document.getElementById('help-close').onclick=()=>{helpModal.classList.remove('show');helpModal.setAttribute('aria-hidden','true');}};
   helpModal.addEventListener('click',e=>{if(e.target===helpModal){helpModal.classList.remove('show');helpModal.setAttribute('aria-hidden','true');}});
   document.getElementById('help-print').onclick=()=>{window.print();};
 
@@ -378,9 +381,7 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
   coilsBuild(); discreteBuild(); holdingBuild(); inputBuild();
 
   // Auto-rebuild when controls change
-  function rebuildOnChange(ids, buildFn){
-    ids.forEach(id=>{const el=document.getElementById(id); if(el){ el.addEventListener('change', buildFn); }});
-  }
+  function rebuildOnChange(ids, buildFn){ ids.forEach(id=>{const el=document.getElementById(id); if(el){ el.addEventListener('change', buildFn); }}); }
   rebuildOnChange(['coils-rows','coils-base','coils-mode'], coilsBuild);
   rebuildOnChange(['discrete-rows','discrete-base'], discreteBuild);
   rebuildOnChange(['holding-rows','holding-base','holding-mode','holding-dt','holding-endian','holding-scale'], holdingBuild);
@@ -414,7 +415,7 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
   const LS_NAME='ups_node_name', LS_ROLE='ups_node_role', LS_AUTO='ups_auto_on', LS_AUTOS='ups_auto_secs', LS_PORT='ups_default_port';
 
   async function loadNodeMeta(){
-    try{{const r=await fetch('/node'); if(r.ok){{const j=await r.json(); node_name.value=j.name??''; node_role.value=j.role??'Master';}}}}catch(_){}
+    try{const r=await fetch('/node'); if(r.ok){const j=await r.json(); node_name.value=j.name??''; node_role.value=j.role??'Master';}}catch(_){}
     const rn=localStorage.getItem(LS_NAME), rr=localStorage.getItem(LS_ROLE);
     if(rn) node_name.value=rn; if(rr==='Master'||rr==='Slave') node_role.value=rr;
     const savedPort=localStorage.getItem(LS_PORT); if(savedPort && !isNaN(savedPort)) port.value=Number(savedPort);
@@ -425,7 +426,7 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
   document.getElementById('save-meta').onclick=async ()=>{
     const nn=node_name.value.trim(), rl=node_role.value; save_status.textContent='Saving...';
     localStorage.setItem(LS_NAME, nn); localStorage.setItem(LS_ROLE, rl);
-    try{{const r=await fetch('/config',{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:nn,role:rl}})}); save_status.textContent=r.ok?'Saved':'Save failed';}}
+    try{const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn,role:rl})}); save_status.textContent=r.ok?'Saved':'Save failed';}
     catch(_){save_status.textContent='Save failed';} setTimeout(()=>save_status.textContent='',1500);
   };
 
@@ -502,7 +503,7 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
       ops.push({node_name:nodeName,node_role:nodeRole,device:"INPUT",ip,unit_id:unit,function:"read_input",address:addr0,count:iCount,datatype:iDT,rw:"R",scale:iScale,endianness:iEnd,value:"",notes:r.notes||""});
     });
 
-    return {{ops:ops, timeout:tmo, dry:isDry, node:{{name:nodeName, role:nodeRole}}}};
+    return {ops:ops, timeout:tmo, dry:isDry, node:{name:nodeName, role:nodeRole}};
   }
 
   function renderResults(columns,rows){
@@ -511,13 +512,16 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
     for(const r of rows){ html+='<tr>'+columns.map(c=>{const v=r[c];const cls=(c.toLowerCase()==='ok')?(v?'ok':'err'):'';const t=(typeof v==='object')?escHtml(JSON.stringify(v)):escHtml(v);return '<td class="'+cls+'">'+t+'</td>';}).join('')+'</tr>'; }
     html+='</tbody></table></div>'; div.innerHTML=html;
     const hdr=columns.map(escCsv).join(','), body=rows.map(row=>columns.map(c=>escCsv(typeof row[c]==='object'?JSON.stringify(row[c]):(row[c]??''))).join(',')).join('\n');
-    const blob=new Blob([hdr+'\n'+body],{{type:'text/csv'}}), url=URL.createObjectURL(blob); const a=document.getElementById('download'); a.href=url; a.style.display='inline-block';
+    const blob=new Blob([hdr+'\n'+body],{type:'text/csv'}), url=URL.createObjectURL(blob); const a=document.getElementById('download'); a.href=url; a.style.display='inline-block';
   }
 
   async function postOps(which){
     const payload=buildOps(which); const status=document.getElementById('status'); status.textContent=(which==='read'?'Reading ':'Writing ')+payload.ops.length+' operations...';
-    try{{const resp=await fetch('/run',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload),credentials:'same-origin'}}); if(!resp.ok){{const t=await resp.text().catch(()=> ''); throw new Error('HTTP '+resp.status+' '+(t||''));}} const data=await resp.json(); renderResults(data.columns||[],data.rows||[]); status.textContent='Done.';}}
-    catch(err){{status.textContent='Error: '+(err?.message||err);}}
+    try{
+      const resp=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),credentials:'same-origin'});
+      if(!resp.ok){const t=await resp.text().catch(()=> ''); throw new Error('HTTP '+resp.status+' '+(t||''));}
+      const data=await resp.json(); renderResults(data.columns||[],data.rows||[]); status.textContent='Done.';
+    }catch(err){status.textContent='Error: '+(err?.message||err);}
   }
   const read_btn=document.getElementById('read-btn'); const write_btn=document.getElementById('write-btn');
   read_btn.onclick=()=>postOps('read');
@@ -526,6 +530,10 @@ Scale lets you store raw units (e.g., *10) but display engineering units.</span>
 </script></body></html>
 """
 
+# Substitute logo URL safely (no f-string)
+INDEX_HTML = INDEX_HTML_RAW.replace("__LOGO_URL__", LOGO_URL)
+
+# ---------------- Routes ----------------
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(INDEX_HTML)
@@ -616,8 +624,10 @@ async def run_mapping(request: Request):
             results.append({**norm, **res})
     finally:
         for c in list(clients.values()):
-            try: c.close()
-            except Exception: pass
+            try:
+                c.close()
+            except Exception:
+                pass
 
     columns = sorted({k for r in results for k in r.keys()})
     return {"columns": columns, "rows": results}
