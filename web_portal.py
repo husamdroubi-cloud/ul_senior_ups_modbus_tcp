@@ -1,9 +1,4 @@
-# web_portal.py — robust static logo + diagnostics + portal UI
-# - Serves /assets from ./assets
-# - Also serves /logo.png directly from assets (fallback)
-# - Adds /debug/static to show what the app sees
-# - Keeps node meta, ping, tabs, table builders, read/write via /run
-
+# web_portal.py — stable build (Render/Windows friendly), robust static serving + portal UI
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,24 +9,24 @@ from pymodbus.client import ModbusTcpClient
 from modbus_portal_cli import perform_row, parse_host_port
 import json, os, logging
 
-# ---------- Paths, logging ----------
+# ---------------- Paths & logging ----------------
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = (APP_DIR / "assets").resolve()
 STATIC_DIR.mkdir(exist_ok=True)
 
-# ---------- App ----------
+# ---------------- App ----------------
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Mount /assets
+# Try to mount /assets
 try:
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR)), name="assets")
     logging.info(f"Mounted /assets -> {STATIC_DIR}")
 except Exception as e:
     logging.error(f"Failed to mount /assets: {e}")
 
-# ---------- Node config ----------
+# ---------------- Node config ----------------
 CONF_PATH = APP_DIR / "node_config.json"
 
 def _load_node_config() -> Dict[str, str]:
@@ -64,7 +59,7 @@ _cfg = _load_node_config()
 app.state.node_name = _cfg["name"]
 app.state.node_role = _cfg["role"]
 
-# ---------- Startup diagnostics ----------
+# ---------------- Startup diagnostics ----------------
 @app.on_event("startup")
 async def _diag_startup():
     try:
@@ -74,9 +69,8 @@ async def _diag_startup():
     logging.info(f"APP_DIR= {APP_DIR}")
     logging.info(f"STATIC_DIR= {STATIC_DIR}  exists={STATIC_DIR.exists()}  files={files}")
 
-# ---------- HTML (raw string; no f-strings) ----------
-INDEX_HTML = r"""
-<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+# ---------------- HTML (raw string; no f-strings) ----------------
+INDEX_HTML = r"""<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Team 1 High Specification Smart UPS - UL/Braeden</title>
 <style>
 :root{color-scheme:light dark}
@@ -113,7 +107,7 @@ td input{width:100%}
 .tabbar button.active{background:#e8f0ff;border-color:#7aa2ff}
 .hidden{display:none}
 .badge{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}
-/* Info (ⓘ) tooltip — light blue filled, always visible */
+/* Light-blue filled info (ⓘ) bubbles */
 .hint{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #7aa2ff;color:#0b3b8c;background:#dbeafe;font-size:12px;cursor:help}
 .hint::before{content:"ⓘ";line-height:1}
 .hint:hover,.hint.active{background:#c7dcff;border-color:#5d91ff}
@@ -137,7 +131,7 @@ td input{width:100%}
     <div class="brand-line brand1">Team 1 High Specification Smart UPS Senior Project</div>
     <div class="brand-line brand2">ModBus/TCP Polling and Simulation Portal</div>
     <div class="brand-line brand3">University of Louisiana &amp; Braeden Engineering Internship Program</div>
-    <div class="muted" style="margin-top:6px">Configure rows, then Read/Write. Classic refs (1/10001/30001/40001) are normalized to 0-based automatically.</div>
+    <div class="muted" style="margin-top:6px">Classic refs (1/10001/30001/40001) are normalized to zero-based automatically.</div>
   </div>
   <div class="brand-right">
     <img src="/logo.png" alt="Braeden logo" onerror="this.style.display='none'"/>
@@ -156,10 +150,8 @@ td input{width:100%}
   <div class="row">
     <label>Default Device/IP <input id="ip" placeholder="192.168.1.10 or host:port"/></label>
     <span class="hint" tabindex="0"><span class="tip">Global target unless a row overrides. host or host:port.</span></span>
-    <label>Default <span class="badge">Port</span> <input id="port" type="number" min="1" max="65535" value="502" title="Simulators often 1502"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Common: 502. Sims: 1502.</span></span>
+    <label>Default <span class="badge">Port</span> <input id="port" type="number" min="1" max="65535" value="502" title="Sims often 1502"/></label>
     <label>Default Unit ID <input id="unit_id" type="number" min="0" max="247" value="1"/></label>
-    <span class="hint" tabindex="0"><span class="tip">For TCP-only devices, usually 1. For TCP→RTU gateways: RS-485 ID.</span></span>
     <label>Timeout (s) <input id="timeout" type="number" step="0.1" min="0.1" value="3.0"/></label>
     <label><input id="dry" type="checkbox" checked/> Dry-run</label>
     <button id="save-meta">Save Node Meta</button><span id="save-status" class="muted"></span>
@@ -255,7 +247,7 @@ td input{width:100%}
       <div class="callout"><b>Node B (Slave)</b><ul>
         <li>Role: Slave, Name “UPS Node B”</li><li>Run Modbus server on B (1502/502)</li><li>Match the address map expected by A</li></ul></div>
       <div class="callout"><b>Gateway (TCP→RTU)</b><ul>
-        <li>Device/IP = gateway IP; Port = gateway port</li><li>Per-row <b>Unit</b> = RS-485 slave ID (1–247)</li></ul></div>
+        <li>Device/IP = gateway IP; Port = gateway port</li><li>Per-row <b>Unit</b> = RS-485 ID (1–247)</li></ul></div>
       <div class="callout"><b>Tips</b><ul>
         <li>Use Ping to check reachability</li><li>Classic refs normalize to 0-based</li></ul></div>
     </div>
@@ -448,10 +440,9 @@ td input{width:100%}
   const read_btn=document.getElementById('read-btn'); const write_btn=document.getElementById('write-btn');
   read_btn.onclick=()=>postOps('read'); write_btn.onclick=()=>postOps('write');
 })();
-</script></body></html>
-"""
+</script></body></html>"""
 
-# ---------- Routes ----------
+# ---------------- Routes ----------------
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(INDEX_HTML)
@@ -466,8 +457,11 @@ def logo_png():
     p = STATIC_DIR / "Braeden_Logo.png"
     if p.exists():
         return FileResponse(str(p), media_type="image/png")
-    # fallback to a 1x1 transparent if missing
-    return Response(content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82", media_type="image/png")
+    # 1x1 transparent PNG fallback
+    return Response(
+        content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82",
+        media_type="image/png",
+    )
 
 @app.get("/node")
 async def get_node():
@@ -512,4 +506,40 @@ async def ping_device(req: Request):
 async def run_mapping(request: Request):
     payload = await request.json()
     timeout = float(payload.get("timeout", 3.0))
-    dry = bool(payload.get("dry
+    dry = bool(payload.get("dry", False))
+    node = payload.get("node") or {}
+    maybe_name = (node.get("name") or "").strip()
+    maybe_role = (node.get("role") or "").strip()
+    changed = False
+    if maybe_name:
+        app.state.node_name = maybe_name; changed = True
+    if maybe_role in ("Master", "Slave"):
+        app.state.node_role = maybe_role; changed = True
+    if changed:
+        _save_node_config(app.state.node_name, app.state.node_role)
+
+    ops: List[Dict[str, Any]] = payload.get("ops") or []
+    if not ops:
+        raise HTTPException(status_code=400, detail="No operations provided")
+
+    clients: Dict[Tuple[str, float], ModbusTcpClient] = {}
+    results: List[Dict[str, Any]] = []
+    try:
+        for op in ops:
+            res = perform_row(op, clients, timeout=timeout, dry=dry)
+            results.append({**op, **res})
+    finally:
+        for c in list(clients.values()):
+            try: c.close()
+            except Exception: pass
+
+    columns = sorted({k for r in results for k in r.keys()})
+    return {"columns": columns, "rows": results}
+
+@app.get("/debug/static")
+def debug_static():
+    try:
+        files = [p.name for p in STATIC_DIR.iterdir()]
+    except Exception as e:
+        files = [f"<error reading dir: {e}>"]
+    return {"app_dir": str(APP_DIR), "static_dir": str(STATIC_DIR), "files": files}
