@@ -1,4 +1,4 @@
-# web_portal.py — Compact UI + wide Notes + Node Meta + Default Port + Auto-Read + Ping Device + Auto-build tables
+# web_portal.py — Portal with info tooltips (ⓘ), Help modal + Print, Ping Device, Auto-build tables, etc.
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,13 +50,14 @@ INDEX_HTML = r"""
 <style>
 :root{color-scheme:light dark}
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.35}
-header{margin-bottom:12px}
+header{margin-bottom:12px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 h2{margin:0 0 4px 0;padding:6px 10px;background:#e8e6ff;border-radius:10px;display:inline-block}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .card{border:1px solid #ddd;border-radius:12px;padding:10px;margin:10px 0}
 .section{margin-top:10px}
 label{display:inline-flex;gap:6px;align-items:center}
 input,select,button{font-size:14px;padding:3px 6px}
+button.icon{padding:2px 8px}
 input[type="number"]{width:6em}
 table{border-collapse:collapse;border-spacing:0;width:auto;max-width:100%;margin-top:6px;table-layout:auto}
 th,td{border:1px solid #eee;padding:2px 4px;font-size:13px;vertical-align:top;white-space:nowrap}
@@ -76,37 +77,83 @@ td input{width:100%}
 .tabbar button.active{background:#e8f0ff;border-color:#7aa2ff}
 .hidden{display:none}
 .badge{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}
+
+/* Info (ⓘ) tooltip */
+.hint{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #888;color:#555;background:#fff;font-size:12px;cursor:help}
+.hint::before{content:"ⓘ";line-height:1}
+.hint:hover,.hint.active{background:#eef5ff;border-color:#5d91ff}
+.hint .tip{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:420px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}
+.hint .tip a{color:#9ecbff}
+.hint .tip:after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:7px solid transparent;border-top-color:#111}
+.hint:hover .tip,.hint.active .tip{opacity:1;pointer-events:auto}
+
+/* Help modal */
+#help-btn{margin-left:8px}
+#help-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:9999}
+#help-modal.show{display:flex}
+#help-card{background:#fff;color:#111;max-width:900px;width:100%;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);padding:16px}
+#help-card h3{margin:0 0 8px 0}
+#help-card .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+#help-card .grid{display:grid;grid-template-columns:1fr;gap:8px}
+@media (min-width:800px){#help-card .grid{grid-template-columns:1fr 1fr}}
+#help-card .callout{border-left:4px solid #7aa2ff;background:#eef5ff;padding:8px;border-radius:8px}
+
+/* Print the help card nicely */
+@media print{
+  body *{visibility:hidden}
+  #help-card, #help-card *{visibility:visible}
+  #help-card{position:absolute;inset:auto;left:0;top:0;width:100%;box-shadow:none}
+}
 </style></head><body>
 <header>
-  <h2>Team 1 High Specification Smart UPS - UL/Braeden</h2>
-  <div class="muted">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>.<br/>
-  You may enter classic Modbus reference numbers (Coils 1-…, Discrete 10001-…, Input 30001-…, Holding 40001-…). The portal normalizes to <b>0-based</b> before sending.</div>
+  <div>
+    <h2>Team 1 High Specification Smart UPS - UL/Braeden</h2>
+    <div class="muted">Configure rows for each table, then click <b>Read All</b> or <b>Write All</b>. You may enter classic Modbus reference numbers (Coils 1-…, Discrete 10001-…, Input 30001-…, Holding 40001-…). The portal normalizes to <b>0-based</b> before sending.</div>
+  </div>
+  <div>
+    <button id="help-btn" class="icon" title="Quick setup help">❓ Help</button>
+  </div>
 </header>
 
 <div class="card">
   <div class="row">
     <label>Node Name <input id="node_name" placeholder="e.g. UPS Node A"/></label>
+    <span class="hint" tabindex="0"><span class="tip">Human-friendly name for this node. Shown at /node and /node/name.\nExamples: “UPS Node A”, “Gateway-01”.</span></span>
+
     <label>Role
       <select id="node_role"><option>Master</option><option>Slave</option></select>
     </label>
+    <span class="hint" tabindex="0"><span class="tip">Master initiates reads/writes. Slave typically exposes values.\nYou can change at any time; it’s purely metadata for now.</span></span>
     <span class="muted">(polled at <code>/node</code> &amp; <code>/node/name</code>)</span>
   </div>
+
   <div class="row">
     <label>Default Device/IP <input id="ip" placeholder="192.168.1.10 or host:port"/></label>
+    <span class="hint" tabindex="0"><span class="tip">TCP target for all rows unless a row provides an override.\nUse host or host:port (e.g. 192.168.1.21:1502).</span></span>
+
     <label>Default <span class="badge">Port</span> <input id="port" type="number" min="1" max="65535" value="502" title="For LAN sims use 1502"/></label>
+    <span class="hint" tabindex="0"><span class="tip">Modbus/TCP port. Common: 502. Simulators often use 1502.</span></span>
+
     <label>Default Unit ID <input id="unit_id" type="number" min="0" max="247" value="1"/></label>
+    <span class="hint" tabindex="0"><span class="tip">Modbus Unit Identifier (slave ID). For TCP-only devices usually 1.\nThrough TCP→RTU gateways it’s the RS-485 device ID (1–247).</span></span>
+
     <label>Timeout (s) <input id="timeout" type="number" step="0.1" min="0.1" value="3.0"/></label>
+    <span class="hint" tabindex="0"><span class="tip">Network timeout for each request. Increase on slow links.</span></span>
+
     <label><input id="dry" type="checkbox" checked/> Dry-run</label>
+    <span class="hint" tabindex="0"><span class="tip">If ON, writes are simulated locally (no change on device). Reads still go to the device.</span></span>
+
     <button id="save-meta">Save Node Meta</button><span id="save-status" class="muted"></span>
-    <button id="ping-btn" title="Try connecting to Default Device/IP at Default Port">Ping Device</button>
+    <button id="ping-btn" class="icon" title="Try connecting to Default Device/IP at Default Port">Ping Device</button>
     <span id="ping-status" class="muted"></span>
   </div>
+
   <div class="row">
     <label><input id="auto" type="checkbox"/> Auto-Read</label>
     <label>every <input id="autoint" type="number" step="0.1" min="0.2" value="2.0" class="gridnum"/> s</label>
-    <span class="muted">Auto-read triggers “Read All” at the chosen interval.</span>
+    <span class="hint" tabindex="0"><span class="tip">When enabled, the portal triggers “Read All” periodically using the interval above.</span></span>
+    <span class="muted">Each row can override IP/Unit. You may also specify <code>host:port</code> in a row’s IP override. The global Port applies if no per-row port is given.</span>
   </div>
-  <div class="muted">Each row can override IP/Unit. You may also specify <code>host:port</code> in a row’s IP override. The global Port applies if no per-row port is given.</div>
 </div>
 
 <div class="card">
@@ -128,6 +175,7 @@ td input{width:100%}
           <option value="write_multi">Write Multiple Coils (comma/semicolon list)</option>
         </select>
       </label>
+      <span class="hint" tabindex="0"><span class="tip">Classic coil addresses start at 1.\nFor multi-write put values like “1,0,1”.</span></span>
       <button id="coils-build">Build Table</button>
     </div>
     <table id="coils-table"></table>
@@ -137,6 +185,7 @@ td input{width:100%}
     <div class="row">
       <label>Rows <input class="gridnum" id="discrete-rows" type="number" min="1" value="8"/></label>
       <label>Base address <input class="gridnum" id="discrete-base" type="number" min="0" value="10001"/></label>
+      <span class="hint" tabindex="0"><span class="tip">Discrete inputs are read-only bits. Classic references start at 10001.</span></span>
       <button id="discrete-build">Build Table</button>
     </div>
     <table id="discrete-table"></table>
@@ -160,6 +209,7 @@ td input{width:100%}
         <select id="holding-endian"><option>ABCD</option><option>BADC</option><option>CDAB</option><option>DCBA</option></select>
       </label>
       <label>Scale <input id="holding-scale" class="gridnum" type="number" step="0.01" value="1.0"/></label>
+      <span class="hint" tabindex="0"><span class="tip">Use int32/float32 for two-register values. Endianness controls word/byte order.\nScale lets you store raw units (e.g., *10) but display engineering units.</span></span>
       <button id="holding-build">Build Table</button>
     </div>
     <table id="holding-table"></table>
@@ -176,6 +226,7 @@ td input{width:100%}
         <select id="input-endian"><option>ABCD</option><option>BADC</option><option>CDAB</option><option>DCBA</option></select>
       </label>
       <label>Scale <input id="input-scale" class="gridnum" type="number" step="0.01" value="1.0"/></label>
+      <span class="hint" tabindex="0"><span class="tip">Input registers are read-only words. Choose datatype/endianness to match the device map.</span></span>
       <button id="input-build">Build Table</button>
     </div>
     <table id="input-table"></table>
@@ -191,22 +242,85 @@ td input{width:100%}
   </div>
 </div>
 
+<!-- HELP MODAL -->
+<div id="help-modal" aria-hidden="true">
+  <div id="help-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <h3 id="help-title">Quick Setup: 2 Nodes (Master / Slave)</h3>
+    <div class="grid">
+      <div class="callout">
+        <b>Node A (Master)</b>
+        <ul>
+          <li>Role: Master, Node Name: “UPS Node A”</li>
+          <li>Default Device/IP: <i>Node B</i> IP (e.g., 192.168.1.21), Port: 1502 (sim) or 502</li>
+          <li>Default Unit ID: 1</li>
+          <li>Coils/Holding: choose modes, enter addresses/values</li>
+          <li>Uncheck Dry-run to perform actual writes</li>
+        </ul>
+      </div>
+      <div class="callout">
+        <b>Node B (Slave)</b>
+        <ul>
+          <li>Role: Slave, Node Name: “UPS Node B”</li>
+          <li>Run a Modbus server/simulator on B (listen on 1502/502)</li>
+          <li>Use the same map (addresses, datatypes) you expect the master to read</li>
+          <li>Optionally enable Auto-Read on B for monitoring</li>
+        </ul>
+      </div>
+      <div class="callout">
+        <b>Gateway (TCP → RTU) case</b>
+        <ul>
+          <li>Default Device/IP: gateway IP; Port: gateway’s Modbus/TCP port</li>
+          <li>Set per-row <b>Unit</b> = RS-485 slave ID (1–247)</li>
+          <li>Leave IP override blank unless a row targets a different device/port</li>
+        </ul>
+      </div>
+      <div class="callout">
+        <b>Tips</b>
+        <ul>
+          <li>Use <b>Ping Device</b> to verify TCP reachability</li>
+          <li>Classic references (40001, 30001, …) are normalized to 0-based automatically</li>
+          <li>Endianness: ABCD (no swap), CDAB (word swap), BADC/DCBA (byte swaps)</li>
+        </ul>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="help-print">🖨️ Print</button>
+      <button id="help-close">Close</button>
+    </div>
+  </div>
+</div>
+
 <div id="results" class="card" style="display:none"></div>
 
 <script>
 (function(){
+  // Tabs
   const tabBtns=document.querySelectorAll('.tabbar button');
   const tabs={coils:document.getElementById('tab-coils'),discrete:document.getElementById('tab-discrete'),holding:document.getElementById('tab-holding'),input:document.getElementById('tab-input')};
   tabBtns.forEach(b=>b.addEventListener('click',()=>{tabBtns.forEach(x=>x.classList.remove('active'));b.classList.add('active');const k=b.dataset.tab;Object.keys(tabs).forEach(t=>tabs[t].classList.toggle('hidden',t!==k));}));
 
+  // Hints: allow click-to-toggle (mobile friendly)
+  document.body.addEventListener('click',e=>{
+    const isHint=e.target.classList.contains('hint')?e.target:(e.target.closest('.hint'));
+    document.querySelectorAll('.hint.active').forEach(h=>{if(h!==isHint)h.classList.remove('active');});
+    if(isHint){isHint.classList.toggle('active');}
+  });
+
+  // Help modal
+  const helpModal=document.getElementById('help-modal');
+  document.getElementById('help-btn').onclick=()=>{helpModal.classList.add('show');helpModal.setAttribute('aria-hidden','false');};
+  document.getElementById('help-close').onclick=()=>{helpModal.classList.remove('show');helpModal.setAttribute('aria-hidden','true');};
+  helpModal.addEventListener('click',e=>{if(e.target===helpModal){helpModal.classList.remove('show');helpModal.setAttribute('aria-hidden','true');}});
+  document.getElementById('help-print').onclick=()=>{window.print();};
+
   const escCsv=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
   const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  // table builders
+  // Table builders
   function buildTable(table,base,rows,includeValue,includeDatatypeNotes=false){
     table.innerHTML='';
     const thead=document.createElement('thead');
-    let head='<tr><th>#</th><th class="ipcell">IP (override)</th><th class="unitcell">Unit</th><th>Address</th>';
+    let head='<tr><th>#</th><th class="ipcell">IP (override) <span class="hint"><span class="tip">Optional: host or host:port per row. If blank, uses Default Device/IP (+ Port).</span></span></th><th class="unitcell">Unit <span class="hint"><span class="tip">Modbus Unit ID. Leave blank to use Default Unit ID.</span></span></th><th>Address</th>';
     if(includeDatatypeNotes) head+='<th class="valuecell">Value (int/float or comma list)</th>';
     else if(includeValue) head+='<th class="valuecell">Value</th>';
     head+='<th class="notescell">Notes</th></tr>';
@@ -236,10 +350,10 @@ td input{width:100%}
   document.getElementById('holding-build').onclick=holdingBuild;
   document.getElementById('input-build').onclick=inputBuild;
 
-  // auto-build on load
+  // Auto-build on load
   coilsBuild(); discreteBuild(); holdingBuild(); inputBuild();
 
-  // auto-rebuild when controls change
+  // Auto-rebuild when controls change
   function rebuildOnChange(ids, buildFn){
     ids.forEach(id=>{const el=document.getElementById(id); if(el){ el.addEventListener('change', buildFn); }});
   }
@@ -319,25 +433,6 @@ td input{width:100%}
 
   // Build ops payload for /run
   function normalizeHostPort(raw, defPort){ if(!raw) return ''; return raw.includes(':')?raw:String(raw)+':'+String(defPort); }
-
-  function rowsFromTable(tableEl){
-    const rows=[]; tableEl.querySelectorAll('tbody tr').forEach(tr=>{
-      const tds=tr.querySelectorAll('td');
-      const ip=tds[1].querySelector('input')?.value??''; const unit=tds[2].querySelector('input')?.value??''; const addr=tds[3].querySelector('input')?.value??'';
-      let idx=4, value=''; if(tds[idx]&&tds[idx].querySelector('input')){value=tds[idx].querySelector('input').value; idx++;}
-      const notes=(tds[idx]&&tds[idx].querySelector('input'))?tds[idx].querySelector('input').value:'';
-      rows.push({ip:ip.trim(),unit_id:unit===''?'':Number(unit),address:addr===''?'':Number(addr),value:value??'',notes});
-    }); return rows;
-  }
-
-  function refToZeroBased(kind,addr){
-    if(addr===''||isNaN(addr)) return addr; const a=Number(addr);
-    if(kind==='coils')return a>=1?a-1:a;
-    if(kind==='discrete')return a>=10001?a-10001:a;
-    if(kind==='input')return a>=30001?a-30001:a;
-    if(kind==='holding')return a>=40001?a-40001:a;
-    return a;
-  }
 
   function buildOps(which){
     const def_ip=(ip_default.value||'').trim();
