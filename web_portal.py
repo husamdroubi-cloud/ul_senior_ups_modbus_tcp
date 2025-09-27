@@ -1,4 +1,4 @@
-# web_portal.py — stable build (Render/Windows friendly), robust static serving + portal UI
+# web_portal.py — logo+help left header; expanded Help; static /assets + /logo.png
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,24 +9,23 @@ from pymodbus.client import ModbusTcpClient
 from modbus_portal_cli import perform_row, parse_host_port
 import json, os, logging
 
-# ---------------- Paths & logging ----------------
+# ---------- Paths & logging ----------
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = (APP_DIR / "assets").resolve()
 STATIC_DIR.mkdir(exist_ok=True)
 
-# ---------------- App ----------------
+# ---------- App ----------
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Try to mount /assets
 try:
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR)), name="assets")
     logging.info(f"Mounted /assets -> {STATIC_DIR}")
 except Exception as e:
     logging.error(f"Failed to mount /assets: {e}")
 
-# ---------------- Node config ----------------
+# ---------- Node config ----------
 CONF_PATH = APP_DIR / "node_config.json"
 
 def _load_node_config() -> Dict[str, str]:
@@ -57,9 +56,9 @@ def _save_node_config(name: str, role: str) -> bool:
 
 _cfg = _load_node_config()
 app.state.node_name = _cfg["name"]
-app.state.node_role = _cfg["role"]
+app.state.node_role  = _cfg["role"]
 
-# ---------------- Startup diagnostics ----------------
+# ---------- Startup diag ----------
 @app.on_event("startup")
 async def _diag_startup():
     try:
@@ -69,19 +68,21 @@ async def _diag_startup():
     logging.info(f"APP_DIR= {APP_DIR}")
     logging.info(f"STATIC_DIR= {STATIC_DIR}  exists={STATIC_DIR.exists()}  files={files}")
 
-# ---------------- HTML (raw string; no f-strings) ----------------
-INDEX_HTML = r"""<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+# ---------- HTML ----------
+INDEX_HTML = r"""<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Team 1 High Specification Smart UPS - UL/Braeden</title>
 <style>
 :root{color-scheme:light dark}
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.35}
-header{margin-bottom:12px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.brand-left{display:flex;flex-direction:column;gap:4px;min-width:0}
+header{margin-bottom:12px}
+.brand-left{display:flex;flex-direction:column;gap:6px;max-width:980px}
 .brand-line{display:inline-block;padding:6px 10px;background:#e8e6ff;border-radius:10px;max-width:100%}
 .brand1{font-size:18px;font-weight:700}
 .brand2{font-size:16px;font-weight:600}
 .brand3{font-size:14px;font-weight:600}
-.brand-right img{max-height:54px;object-fit:contain}
+.brand-toolbar{display:flex;align-items:center;gap:12px;margin-top:6px}
+.brand-toolbar img{max-height:52px;object-fit:contain}
+#help-btn{padding:6px 10px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .card{border:1px solid #ddd;border-radius:12px;padding:10px;margin:10px 0}
 .section{margin-top:10px}
@@ -107,22 +108,23 @@ td input{width:100%}
 .tabbar button.active{background:#e8f0ff;border-color:#7aa2ff}
 .hidden{display:none}
 .badge{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px}
-/* Light-blue filled info (ⓘ) bubbles */
+/* info bubbles (light blue) */
 .hint{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #7aa2ff;color:#0b3b8c;background:#dbeafe;font-size:12px;cursor:help}
 .hint::before{content:"ⓘ";line-height:1}
 .hint:hover,.hint.active{background:#c7dcff;border-color:#5d91ff}
-.hint .tip{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:420px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}
+.hint .tip{position:absolute;z-index:999;left:50%;transform:translateX(-50%);bottom:125%;min-width:260px;max-width:460px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s;white-space:pre-wrap}
 .hint:hover .tip,.hint.active .tip{opacity:1;pointer-events:auto}
 /* Help modal */
-#help-btn{margin-left:8px}
 #help-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:9999}
 #help-modal.show{display:flex}
-#help-card{background:#fff;color:#111;max-width:900px;width:100%;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);padding:16px}
+#help-card{background:#fff;color:#111;max-width:1000px;width:100%;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);padding:16px}
 #help-card h3{margin:0 0 8px 0}
+#help-card h4{margin:10px 0 6px 0}
 #help-card .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
-#help-card .grid{display:grid;grid-template-columns:1fr;gap:8px}
-@media (min-width:800px){#help-card .grid{grid-template-columns:1fr 1fr}}
-#help-card .callout{border-left:4px solid #7aa2ff;background:#eef5ff;padding:8px;border-radius:8px}
+#help-card .grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media (min-width:860px){#help-card .grid{grid-template-columns:1fr 1fr}}
+#help-card .callout{border-left:4px solid #7aa2ff;background:#eef5ff;padding:10px;border-radius:8px}
+#help-card ul{margin:4px 0 0 18px;padding:0}
 @media print{body *{visibility:hidden}#help-card,#help-card *{visibility:visible}#help-card{position:absolute;left:0;top:0;width:100%;box-shadow:none}}
 </style></head><body>
 
@@ -131,25 +133,27 @@ td input{width:100%}
     <div class="brand-line brand1">Team 1 High Specification Smart UPS Senior Project</div>
     <div class="brand-line brand2">ModBus/TCP Polling and Simulation Portal</div>
     <div class="brand-line brand3">University of Louisiana &amp; Braeden Engineering Internship Program</div>
-    <div class="muted" style="margin-top:6px">Classic refs (1/10001/30001/40001) are normalized to zero-based automatically.</div>
-  </div>
-  <div class="brand-right">
-    <img src="/logo.png" alt="Braeden logo" onerror="this.style.display='none'"/>
-    <div style="text-align:right;margin-top:6px"><button id="help-btn" class="icon">❓ Help</button></div>
+
+    <div class="brand-toolbar">
+      <img src="/logo.png" alt="Braeden logo" onerror="this.style.display='none'"/>
+      <button id="help-btn" class="icon">❓ Help</button>
+    </div>
+
+    <div class="muted">Classic refs (1/10001/30001/40001) are normalized to zero-based automatically.</div>
   </div>
 </header>
 
 <div class="card">
   <div class="row">
     <label>Node Name <input id="node_name" placeholder="e.g. UPS Node A"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Human-friendly node name. Exposed at /node and /node/name.</span></span>
+    <span class="hint" tabindex="0"><span class="tip">Human-friendly node name. Polled at /node and /node/name.</span></span>
     <label>Role <select id="node_role"><option>Master</option><option>Slave</option></select></label>
-    <span class="hint" tabindex="0"><span class="tip">Master initiates reads/writes. Slave exposes values.</span></span>
+    <span class="hint" tabindex="0"><span class="tip">Master initiates reads/writes. Slave exposes values (via a Modbus server you run).</span></span>
     <span class="muted">(polled at <code>/node</code> &amp; <code>/node/name</code>)</span>
   </div>
   <div class="row">
     <label>Default Device/IP <input id="ip" placeholder="192.168.1.10 or host:port"/></label>
-    <span class="hint" tabindex="0"><span class="tip">Global target unless a row overrides. host or host:port.</span></span>
+    <span class="hint" tabindex="0"><span class="tip">Global target unless a row overrides. You can use host or host:port. Per-row override accepts host:port too.</span></span>
     <label>Default <span class="badge">Port</span> <input id="port" type="number" min="1" max="65535" value="502" title="Sims often 1502"/></label>
     <label>Default Unit ID <input id="unit_id" type="number" min="0" max="247" value="1"/></label>
     <label>Timeout (s) <input id="timeout" type="number" step="0.1" min="0.1" value="3.0"/></label>
@@ -240,18 +244,104 @@ td input{width:100%}
 
 <div id="help-modal" aria-hidden="true">
   <div id="help-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
-    <h3 id="help-title">Quick Setup: 2 Nodes (Master / Slave)</h3>
+    <h3 id="help-title">Quick Guide & Reference</h3>
+
     <div class="grid">
-      <div class="callout"><b>Node A (Master)</b><ul>
-        <li>Role: Master, Name “UPS Node A”</li><li>Default Device/IP: Node B IP, Port 1502/502</li><li>Unit ID: 1</li><li>Uncheck Dry-run to write</li></ul></div>
-      <div class="callout"><b>Node B (Slave)</b><ul>
-        <li>Role: Slave, Name “UPS Node B”</li><li>Run Modbus server on B (1502/502)</li><li>Match the address map expected by A</li></ul></div>
-      <div class="callout"><b>Gateway (TCP→RTU)</b><ul>
-        <li>Device/IP = gateway IP; Port = gateway port</li><li>Per-row <b>Unit</b> = RS-485 ID (1–247)</li></ul></div>
-      <div class="callout"><b>Tips</b><ul>
-        <li>Use Ping to check reachability</li><li>Classic refs normalize to 0-based</li></ul></div>
+      <div class="callout">
+        <h4>Overview</h4>
+        <ul>
+          <li>Enter targets (IP/host:port), choose mode, click <b>Read All</b> or <b>Write All</b>.</li>
+          <li>Classic 1/10001/30001/40001 addresses are auto-normalized to zero-based.</li>
+          <li><b>Dry-run</b> shows what would be sent without touching devices.</li>
+          <li><b>Auto-Read</b> periodically re-runs reads (great for dashboards).</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Field Cheatsheet</h4>
+        <ul>
+          <li><b>Node Name</b>: label polled at <code>/node</code> & <code>/node/name</code>.</li>
+          <li><b>Role</b>: <i>Master</i> initiates; <i>Slave</i> is a device/server you run.</li>
+          <li><b>Default Device/IP</b>: fallback hostname or <code>host:port</code> if row empty.</li>
+          <li><b>Port</b>: default Modbus/TCP (502) or simulator (e.g., 1502).</li>
+          <li><b>Unit ID</b>: Modbus unit (RTU address), 0–247.</li>
+          <li><b>Timeout</b>: socket timeout in seconds.</li>
+          <li><b>Auto-Read</b>: set the polling interval. Writes are never auto-looped.</li>
+          <li><b>Dry-run</b>: build/validate requests only—no I/O.</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Per-Row Columns</h4>
+        <ul>
+          <li><b>IP (override)</b>: optional per-row target (<code>host</code> or <code>host:port</code>).</li>
+          <li><b>Unit</b>: overrides default Unit ID (gateway RS-485 ID).</li>
+          <li><b>Address</b>: can be 1-based (coils), 10001/30001/40001 style — auto-normalized.</li>
+          <li><b>Value</b>: for writes—single int/bool, or comma/semicolon list for multi writes.</li>
+          <li><b>Notes</b>: free text. Exported in CSV.</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Modes & Datatypes</h4>
+        <ul>
+          <li><b>Coils</b>: read/write booleans. Multi-write accepts lists of 0/1.</li>
+          <li><b>Discrete Inputs</b>: read-only booleans.</li>
+          <li><b>Holding Registers</b>: read/write; supports int16/uint16/int32/float32, endianness & scaling.</li>
+          <li><b>Input Registers</b>: read-only; same decoding options as holding.</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Address Normalization</h4>
+        <ul>
+          <li>Coils: 1 → 0 (zero-based coil index)</li>
+          <li>Discrete: 10001 → 0</li>
+          <li>Input: 30001 → 0</li>
+          <li>Holding: 40001 → 0</li>
+          <li>Already zero-based? They pass through untouched.</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Two-Node Simulation (Master / Slave)</h4>
+        <ul>
+          <li><b>Node A (Master)</b>: Role=Master; Default Device/IP=&nbsp;Node B’s IP; Port=1502/502; Unit=1.</li>
+          <li><b>Node B (Slave)</b>: run a Modbus server/simulator (e.g., <i>pymodbus</i> sim) on Port 1502/502.</li>
+          <li>On A, build tables and Read/Write. Use <b>Ping Device</b> to confirm reachability first.</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Gateways (TCP→RTU)</h4>
+        <ul>
+          <li>Set Device/IP to the gateway’s IP/port.</li>
+          <li>Per-row <b>Unit</b> is the RS-485 device address behind the gateway.</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Diagnostics & Export</h4>
+        <ul>
+          <li>Use <b>Ping Device</b> (TCP connect) before reads/writes.</li>
+          <li>Results are shown below and also downloadable as <b>results.csv</b>.</li>
+        </ul>
+      </div>
+
+      <div class="callout">
+        <h4>Troubleshooting</h4>
+        <ul>
+          <li><i>Timeouts</i>: check IP/port, firewall, Unit ID, and that the device/server is running.</li>
+          <li><i>Writes ignored</i>: disable Dry-run; ensure correct mode and datatype.</li>
+          <li><i>Bad values</i>: verify datatype/endianness/scale and try a known register.</li>
+        </ul>
+      </div>
     </div>
-    <div class="actions"><button id="help-print">🖨️ Print</button><button id="help-close">Close</button></div>
+
+    <div class="actions">
+      <button id="help-print">🖨️ Print</button>
+      <button id="help-close">Close</button>
+    </div>
   </div>
 </div>
 
@@ -259,16 +349,19 @@ td input{width:100%}
 
 <script>
 (function(){
+  // Tabs
   const tabBtns=document.querySelectorAll('.tabbar button');
   const tabs={coils:document.getElementById('tab-coils'),discrete:document.getElementById('tab-discrete'),holding:document.getElementById('tab-holding'),input:document.getElementById('tab-input')};
   tabBtns.forEach(b=>b.addEventListener('click',()=>{tabBtns.forEach(x=>x.classList.remove('active'));b.classList.add('active');const k=b.dataset.tab;Object.keys(tabs).forEach(t=>tabs[t].classList.toggle('hidden',t!==k));}));
 
+  // Info bubbles & Help modal
   document.body.addEventListener('click',e=>{const h=e.target.closest('.hint');document.querySelectorAll('.hint.active').forEach(x=>{if(x!==h)x.classList.remove('active');});if(h)h.classList.toggle('active');});
   const help=document.getElementById('help-modal');document.getElementById('help-btn').onclick=()=>{help.classList.add('show');help.setAttribute('aria-hidden','false');};
   document.getElementById('help-close').onclick=()=>{help.classList.remove('show');help.setAttribute('aria-hidden','true');};
   help.addEventListener('click',e=>{if(e.target===help){help.classList.remove('show');help.setAttribute('aria-hidden','true');}});
   document.getElementById('help-print').onclick=()=>{window.print();};
 
+  // Utils
   const escCsv=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
   const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
@@ -295,27 +388,32 @@ td input{width:100%}
     table.appendChild(tbody);
   }
 
+  // Builders
   const coilsBuild=()=>{const inc=document.getElementById('coils-mode').value!=='read_coils';buildTable(document.getElementById('coils-table'),Number(document.getElementById('coils-base').value),Number(document.getElementById('coils-rows').value),inc,false);};
   const discreteBuild=()=>{buildTable(document.getElementById('discrete-table'),Number(document.getElementById('discrete-base').value),Number(document.getElementById('discrete-rows').value),false,false);};
   const holdingBuild=()=>{const inc=document.getElementById('holding-mode').value!=='read_holding';buildTable(document.getElementById('holding-table'),Number(document.getElementById('holding-base').value),Number(document.getElementById('holding-rows').value),inc,true);};
   const inputBuild=()=>{buildTable(document.getElementById('input-table'),Number(document.getElementById('input-base').value),Number(document.getElementById('input-rows').value),false,true);};
-
   document.getElementById('coils-build').onclick=coilsBuild;
   document.getElementById('discrete-build').onclick=discreteBuild;
   document.getElementById('holding-build').onclick=holdingBuild;
   document.getElementById('input-build').onclick=inputBuild;
   coilsBuild();discreteBuild();holdingBuild();inputBuild();
 
+  // Gather rows
   function rowsFromTable(tableEl){
     const rows=[]; tableEl.querySelectorAll('tbody tr').forEach(tr=>{
       const tds=tr.querySelectorAll('td');
-      const ip=tds[1].querySelector('input')?.value??''; const unit=tds[2].querySelector('input')?.value??''; const addr=tds[3].querySelector('input')?.value??'';
-      let idx=4, value=''; if(tds[idx]&&tds[idx].querySelector('input')){value=tds[idx].querySelector('input').value; idx++;}
+      const ip=tds[1].querySelector('input')?.value??'';
+      const unit=tds[2].querySelector('input')?.value??'';
+      const addr=tds[3].querySelector('input')?.value??'';
+      let idx=4, value='';
+      if(tds[idx]&&tds[idx].querySelector('input')){value=tds[idx].querySelector('input').value; idx++;}
       const notes=(tds[idx]&&tds[idx].querySelector('input'))?tds[idx].querySelector('input').value:'';
       rows.push({ip:ip.trim(),unit_id:unit===''?'':Number(unit),address:addr===''?'':Number(addr),value:value??'',notes});
     }); return rows;
   }
 
+  // Address normalization
   function refToZeroBased(kind,addr){
     if(addr===''||isNaN(addr)) return addr; const a=Number(addr);
     if(kind==='coils')return a>=1?a-1:a;
@@ -325,11 +423,13 @@ td input{width:100%}
     return a;
   }
 
+  // DOM refs
   const node_name=document.getElementById('node_name'), node_role=document.getElementById('node_role'), save_status=document.getElementById('save-status');
   const ip_default=document.getElementById('ip'), port=document.getElementById('port'), unit_id=document.getElementById('unit_id'), timeout=document.getElementById('timeout'), dry=document.getElementById('dry');
   const auto=document.getElementById('auto'), autoint=document.getElementById('autoint');
   const ping_btn=document.getElementById('ping-btn'), ping_status=document.getElementById('ping-status');
 
+  // Local storage keys
   const LS_NAME='ups_node_name', LS_ROLE='ups_node_role', LS_AUTO='ups_auto_on', LS_AUTOS='ups_auto_secs', LS_PORT='ups_default_port';
 
   async function loadNodeMeta(){
@@ -350,12 +450,14 @@ td input{width:100%}
 
   port.addEventListener('change',()=>{ const p=parseInt(port.value,10); if(!isNaN(p)) localStorage.setItem(LS_PORT,String(p)); });
 
+  // Auto-read timer
   let autoTimer=null;
   function startAuto(){ stopAuto(); const secs=Math.max(0.2,parseFloat(autoint.value)||2); autoTimer=setInterval(()=>read_btn.click(), secs*1000); localStorage.setItem(LS_AUTO,'1'); localStorage.setItem(LS_AUTOS,String(secs)); }
   function stopAuto(){ if(autoTimer){clearInterval(autoTimer); autoTimer=null;} localStorage.setItem(LS_AUTO,'0'); }
   auto.addEventListener('change',()=>{ if(auto.checked) startAuto(); else stopAuto(); });
   autoint.addEventListener('change',()=>{ if(auto.checked) startAuto(); });
 
+  // Ping
   async function pingDevice(){
     const ip=(ip_default.value||'').trim();
     const p=parseInt(port.value,10)||502;
@@ -371,8 +473,10 @@ td input{width:100%}
   }
   ping_btn.onclick=pingDevice;
 
+  // Helpers
   function normalizeHostPort(raw, defPort){ if(!raw) return ''; return raw.includes(':')?raw:String(raw)+':'+String(defPort); }
 
+  // Build request payload
   function buildOps(which){
     const def_ip=(ip_default.value||'').trim();
     const def_port=parseInt(port.value,10)||502;
@@ -442,7 +546,7 @@ td input{width:100%}
 })();
 </script></body></html>"""
 
-# ---------------- Routes ----------------
+# ---------- Routes ----------
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(INDEX_HTML)
@@ -451,13 +555,12 @@ async def index():
 async def favicon():
     return Response(status_code=204)
 
-# Serve /logo.png directly from assets (fallback)
 @app.get("/logo.png")
 def logo_png():
     p = STATIC_DIR / "Braeden_Logo.png"
     if p.exists():
         return FileResponse(str(p), media_type="image/png")
-    # 1x1 transparent PNG fallback
+    # 1x1 transparent PNG
     return Response(
         content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82",
         media_type="image/png",
