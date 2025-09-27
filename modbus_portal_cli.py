@@ -1,20 +1,20 @@
 """
 modbus_portal_cli.py
-- Core Modbus/TCP execution helpers used by the web portal (and optional CLI)
-- NEW: Accept 'host:port' (and IPv6 '[addr]:port') in the IP field.
+- Core Modbus/TCP helpers used by the web portal (and optional CLI)
+- No dependency on `pymodbus.payload` (uses `struct` + manual byte/word order)
+- Supports IP strings like 'host:port' or '[IPv6]:port'
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Dict, Any, Tuple, List
 import math
 import re
+import struct
 
-from pymodbus.client import ModbusTcpClient
-from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
-from pymodbus.constants import Endian
+from pymodbus.client import ModbusTcpClient  # works with pymodbus 3.x (and most 2.x)
 
 # ----------------------------
-# Host:Port parsing (NEW)
+# Host:Port parsing
 # ----------------------------
 
 _HOSTPORT_RE = re.compile(
@@ -28,10 +28,6 @@ _HOSTPORT_RE = re.compile(
 )
 
 def parse_host_port(ip_text: str, default_port: int = 502) -> Tuple[str, int]:
-    """
-    Accepts 'host', 'host:port', '[IPv6]', or '[IPv6]:port'.
-    Returns (host, port). Whitespace is ignored.
-    """
     if not ip_text:
         return "", default_port
     m = _HOSTPORT_RE.match(ip_text)
@@ -43,124 +39,182 @@ def parse_host_port(ip_text: str, default_port: int = 502) -> Tuple[str, int]:
 
 
 # ----------------------------
-# Endianness helpers
+# Endianness (word/byte order)
+# ----------------------------
+# We treat ABCD as the canonical byte order (big-endian bytes, big-endian word order).
+# For a 32-bit value, bytes are A B C D (A = MSB).
+# Registers are 16-bit words:
+#   ABCD: reg0 = [A B], reg1 = [C D]
+#   CDAB: reg0 = [C D], reg1 = [A B]        (word swap)
+#   BADC: reg0 = [B A], reg1 = [D C]        (byte swap in each word)
+#   DCBA: reg0 = [D C], reg1 = [B A]        (byte swap + word swap)
+
+def _reg_from_bytes(b0: int, b1: int) -> int:
+    return ((b0 & 0xFF) << 8) | (b1 & 0xFF)
+
+def _bytes_from_reg(reg: int) -> Tuple[int, int]:
+    return ((reg >> 8) & 0xFF, reg & 0xFF)
+
+def pack_i32_to_regs(value: int, order: str) -> List[int]:
+    # Build ABCD bytes using big-endian pack, then permute into two registers
+    abcd = struct.pack(">i", int(value))
+    A, B, C, D = abcd[0], abcd[1], abcd[2], abcd[3]
+    o = (order or "ABCD").upper()
+    if o == "ABCD":
+        return [_reg_from_bytes(A,B), _reg_from_bytes(C,D)]
+    if o == "CDAB":
+        return [_reg_from_bytes(C,D), _reg_from_bytes(A,B)]
+    if o == "BADC":
+        return [_reg_from_bytes(B,A), _reg_from_bytes(D,C)]
+    if o == "DCBA":
+        return [_reg_from_bytes(D,C), _reg_from_bytes(B,A)]
+    # default
+    return [_reg_from_bytes(A,B), _reg_from_bytes(C,D)]
+
+def pack_f32_to_regs(value: float, order: str) -> List[int]:
+    abcd = struct.pack(">f", float(value))
+    A, B, C, D = abcd[0], abcd[1], abcd[2], abcd[3]
+    o = (order or "ABCD").upper()
+    if o == "ABCD":
+        return [_reg_from_bytes(A,B), _reg_from_bytes(C,D)]
+    if o == "CDAB":
+        return [_reg_from_bytes(C,D), _reg_from_bytes(A,B)]
+    if o == "BADC":
+        return [_reg_from_bytes(B,A), _reg_from_bytes(D,C)]
+    if o == "DCBA":
+        return [_reg_from_bytes(D,C), _reg_from_bytes(B,A)]
+    return [_reg_from_bytes(A,B), _reg_from_bytes(C,D)]
+
+def unpack_i32_from_regs(regs: List[int], order: str) -> int | None:
+    if len(regs) < 2:
+        return None
+    r0, r1 = int(regs[0]), int(regs[1])
+    a0, a1 = _bytes_from_reg(r0)
+    b0, b1 = _bytes_from_reg(r1)
+    o = (order or "ABCD").upper()
+    # Reconstruct ABCD in canonical order
+    if o == "ABCD":
+        A, B, C, D = a0, a1, b0, b1
+    elif o == "CDAB":
+        A, B, C, D = b0, b1, a0, a1
+    elif o == "BADC":
+        A, B, C, D = a1, a0, b1, b0
+    elif o == "DCBA":
+        A, B, C, D = b1, b0, a1, a0
+    else:
+        A, B, C, D = a0, a1, b0, b1
+    return struct.unpack(">i", bytes([A,B,C,D]))[0]
+
+def unpack_f32_from_regs(regs: List[int], order: str) -> float | None:
+    if len(regs) < 2:
+        return None
+    r0, r1 = int(regs[0]), int(regs[1])
+    a0, a1 = _bytes_from_reg(r0)
+    b0, b1 = _bytes_from_reg(r1)
+    o = (order or "ABCD").upper()
+    if o == "ABCD":
+        A, B, C, D = a0, a1, b0, b1
+    elif o == "CDAB":
+        A, B, C, D = b0, b1, a0, a1
+    elif o == "BADC":
+        A, B, C, D = a1, a0, b1, b0
+    elif o == "DCBA":
+        A, B, C, D = b1, b0, a1, a0
+    else:
+        A, B, C, D = a0, a1, b0, b1
+    return struct.unpack(">f", bytes([A,B,C,D]))[0]
+
+
+# ----------------------------
+# Encode / Decode for portal
 # ----------------------------
 
-def endian_from_code(code: str) -> Tuple[Endian, Endian]:
-    """
-    Map 4-letter word order codes to (byteorder, wordorder).
+def _to_num(token: str) -> float:
+    t = (token or "").strip().lower()
+    if t in ("true", "on", "yes"):
+        return 1.0
+    if t in ("false", "off", "no"):
+        return 0.0
+    return float(token)
 
-    ABCD : Big byte, Big word
-    DCBA : Little byte, Little word
-    BADC : Big byte, Little word
-    CDAB : Little byte, Big word
-    """
-    c = (code or "ABCD").upper()
-    if c == "ABCD":
-        return Endian.Big, Endian.Big
-    if c == "DCBA":
-        return Endian.Little, Endian.Little
-    if c == "BADC":
-        return Endian.Big, Endian.Little
-    if c == "CDAB":
-        return Endian.Little, Endian.Big
-    return Endian.Big, Endian.Big
+def _apply_scale_write(v: float, scale: float) -> float:
+    return v / scale if (scale not in (None, 0, 1) and not math.isclose(scale, 1.0)) else v
 
-
-# ----------------------------
-# Encode / Decode helpers
-# ----------------------------
+def _apply_scale_read(v: float, scale: float) -> float:
+    return v * scale if (scale not in (None, 0, 1) and not math.isclose(scale, 1.0)) else v
 
 def build_registers(value_text: str, datatype: str, endianness: str, scale: float = 1.0) -> List[int]:
     """
     Convert a string to Modbus register list for writes.
     - datatype: int16, uint16, int32, float32
-    - scale: if provided, 'raw' = value/scale (for numeric types)
-    Supports:
-      * single scalar for single-register write
-      * comma/semicolon separated for multi-write (each element encoded independently)
+    - For multi-write, pass comma/space/semicolon separated values; we append regs in order.
     """
     if value_text is None:
         value_text = ""
     value_text = value_text.strip()
     parts = [p for p in re.split(r"[,\s;]+", value_text) if p != ""]
-
-    bo, wo = endian_from_code(endianness)
+    dt = (datatype or "int16").lower()
     out: List[int] = []
 
-    def to_num(token: str) -> float:
-        if token.lower() in ("true", "on"):  # convenience
-            return 1.0
-        if token.lower() in ("false", "off"):
-            return 0.0
-        return float(token)
-
-    def apply_scale_for_write(v: float) -> float:
-        return v / scale if (scale not in (None, 0, 1) and not math.isclose(scale, 1.0)) else v
-
-    if datatype in ("int16", "uint16"):
+    if dt in ("int16", "uint16"):
         for p in (parts or ["0"]):
-            v = int(round(apply_scale_for_write(to_num(p))))
-            if datatype == "uint16":
+            v = int(round(_apply_scale_write(_to_num(p), scale)))
+            if dt == "uint16":
                 v &= 0xFFFF
-            out.append(v)
+            out.append(v & 0xFFFF)
 
-    elif datatype in ("int32", "float32"):
-        # 32-bit -> 2 registers each
+    elif dt == "int32":
         for p in (parts or ["0"]):
-            builder = BinaryPayloadBuilder(byteorder=bo, wordorder=wo)
-            if datatype == "int32":
-                v = int(round(apply_scale_for_write(to_num(p))))
-                builder.add_32bit_int(v)
-            else:
-                v = apply_scale_for_write(to_num(p))
-                builder.add_32bit_float(v)
-            regs = builder.to_registers()
-            out.extend(regs)
+            v = int(round(_apply_scale_write(_to_num(p), scale)))
+            out.extend(pack_i32_to_regs(v, endianness))
+
+    elif dt == "float32":
+        for p in (parts or ["0"]):
+            v = _apply_scale_write(_to_num(p), scale)
+            out.extend(pack_f32_to_regs(float(v), endianness))
 
     else:
-        # default: treat as uint16
+        # default to uint16
         for p in (parts or ["0"]):
-            v = int(round(apply_scale_for_write(to_num(p))))
+            v = int(round(_apply_scale_write(_to_num(p), scale)))
             out.append(v & 0xFFFF)
 
     return out
 
-
-def decode_registers(registers: List[int], datatype: str, endianness: str, scale: float = 1.0) -> Any:
+def decode_registers(registers: List[int], datatype: str, endianness: str, scale: float = 1.0):
     """
     Convert register list to a value using datatype and endianness.
-    Returns a scalar (for 1 value) or list.
+    Returns a scalar (for 1 value) or a list (for multiple).
     """
     if not registers:
         return None
-
-    bo, wo = endian_from_code(endianness)
-
-    def apply_scale_for_read(v: float) -> float:
-        return v * scale if (scale not in (None, 0, 1) and not math.isclose(scale, 1.0)) else v
-
-    def chunk(lst: List[int], size: int) -> List[List[int]]:
-        return [lst[i:i+size] for i in range(0, len(lst), size)]
-
-    if datatype == "int16":
-        vals = [apply_scale_for_read(int((r if r < 0x8000 else r - 0x10000))) for r in registers]
-    elif datatype == "uint16":
-        vals = [apply_scale_for_read(int(r & 0xFFFF)) for r in registers]
-    elif datatype in ("int32", "float32"):
-        need = 2
+    dt = (datatype or "int16").lower()
+    if dt == "int16":
+        vals = [_apply_scale_read((r if r < 0x8000 else r - 0x10000), scale) for r in registers]
+    elif dt == "uint16":
+        vals = [_apply_scale_read(int(r & 0xFFFF), scale) for r in registers]
+    elif dt == "int32":
         vals = []
-        for pair in chunk(registers, need):
-            if len(pair) < need:
+        for i in range(0, len(registers), 2):
+            chunk = registers[i:i+2]
+            if len(chunk) < 2:
                 break
-            decoder = BinaryPayloadDecoder.fromRegisters(pair, byteorder=bo, wordorder=wo)
-            if datatype == "int32":
-                vals.append(apply_scale_for_read(decoder.decode_32bit_int()))
-            else:
-                vals.append(apply_scale_for_read(decoder.decode_32bit_float()))
+            v = unpack_i32_from_regs(chunk, endianness)
+            if v is None:
+                continue
+            vals.append(_apply_scale_read(v, scale))
+    elif dt == "float32":
+        vals = []
+        for i in range(0, len(registers), 2):
+            chunk = registers[i:i+2]
+            if len(chunk) < 2:
+                break
+            v = unpack_f32_from_regs(chunk, endianness)
+            if v is None:
+                continue
+            vals.append(_apply_scale_read(v, scale))
     else:
-        vals = [apply_scale_for_read(int(r & 0xFFFF)) for r in registers]
-
+        vals = [_apply_scale_read(int(r & 0xFFFF), scale) for r in registers]
     return vals[0] if len(vals) == 1 else vals
 
 
@@ -172,15 +226,15 @@ def perform_row(row: Dict[str, Any], clients: Dict[Tuple[str, int, float], Modbu
                 timeout: float = 3.0, dry: bool = False) -> Dict[str, Any]:
     """
     Execute a single mapping row.
-    Expected keys in row:
+    Expected keys:
       ip (host or host:port), unit_id, function, address, count, datatype, rw, scale, endianness, value
     'clients' is a cache dict keyed by (host, port, timeout).
-    Returns: dict with fields like ok, error, data/value, etc.
+    Returns: dict with fields like ok, error, value, registers, etc.
     """
     result: Dict[str, Any] = {"ok": False}
 
-    ip_raw = str(row.get("ip", "")).strip()
-    host, port = parse_host_port(ip_raw or "127.0.0.1", default_port=502)
+    raw_ip = str(row.get("ip", "")).strip()
+    host, port = parse_host_port(raw_ip or "127.0.0.1", default_port=502)
 
     unit = int(row.get("unit_id", 1) or 1)
     fn = str(row.get("function", "")).strip().lower()
@@ -190,13 +244,11 @@ def perform_row(row: Dict[str, Any], clients: Dict[Tuple[str, int, float], Modbu
     rw = str(row.get("rw", "R")).upper()
     end = str(row.get("endianness", "ABCD"))
     scale = float(row.get("scale", 1.0) or 1.0)
-    value_text = str(row.get("value", "") if row.get("value", "") is not None else "")
+    value_text = "" if row.get("value") is None else str(row.get("value"))
 
-    # Normalize negative or silly counts
     if count <= 0:
         count = 1
 
-    # Client cache key includes PORT now (NEW)
     key = (host, port, float(timeout))
     client = clients.get(key)
     if client is None:
@@ -219,8 +271,7 @@ def perform_row(row: Dict[str, Any], clients: Dict[Tuple[str, int, float], Modbu
                 result["value"] = bits[0] if len(bits) == 1 else bits
 
         elif fn in ("write_single", "write_single_coil", "write coil", "write_coil"):
-            v = value_text.strip().lower()
-            bit = v in ("1", "true", "on", "yes")
+            bit = str(value_text).strip().lower() in ("1", "true", "on", "yes")
             if dry:
                 result["ok"] = True
                 result["value"] = bit
@@ -232,13 +283,11 @@ def perform_row(row: Dict[str, Any], clients: Dict[Tuple[str, int, float], Modbu
                 result["value"] = bit
 
         elif fn in ("write_multi", "write_multiple_coils", "write coils", "write_coils"):
-            # values like "1,0,1"
             bits = []
-            for p in re.split(r"[,\s;]+", value_text.strip()):
+            for p in re.split(r"[,\s;]+", str(value_text).strip()):
                 if not p:
                     continue
-                b = p.strip().lower() in ("1", "true", "on", "yes")
-                bits.append(b)
+                bits.append(p.strip().lower() in ("1", "true", "on", "yes"))
             if not bits:
                 bits = [False]
             if dry:
@@ -327,13 +376,13 @@ def perform_row(row: Dict[str, Any], clients: Dict[Tuple[str, int, float], Modbu
 
 
 # ----------------------------
-# (Optional) CSV/Excel loader used by CLI mode
+# (Optional) CSV/Excel loader for CLI mode
 # ----------------------------
 
 def load_rows(path: str) -> List[Dict[str, Any]]:
     """
     Load mapping rows from .csv or .xlsx/.xls.
-    Expected headers (case-insensitive, extra fields ignored):
+    Expected headers (case-insensitive; extra fields ignored):
       device, ip, unit_id, function, address, count, datatype, rw, value, scale, endianness, notes
     """
     import os
@@ -344,8 +393,6 @@ def load_rows(path: str) -> List[Dict[str, Any]]:
         df = pd.read_csv(path)
     else:
         df = pd.read_excel(path)
-
-    # Normalize headers
     df.columns = [str(c).strip().lower() for c in df.columns]
 
     required = {"ip", "function", "address"}
@@ -355,7 +402,7 @@ def load_rows(path: str) -> List[Dict[str, Any]]:
 
     out: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
-        row = {
+        out.append({
             "device": r.get("device", ""),
             "ip": str(r.get("ip", "")).strip(),
             "unit_id": r.get("unit_id", 1),
@@ -368,21 +415,20 @@ def load_rows(path: str) -> List[Dict[str, Any]]:
             "scale": r.get("scale", 1.0),
             "endianness": r.get("endianness", "ABCD"),
             "notes": r.get("notes", ""),
-        }
-        out.append(row)
+        })
     return out
 
 
 # ----------------------------
-# Basic CLI for ad-hoc testing
+# Simple CLI (optional)
 # ----------------------------
 
 def main():
     import argparse, json as _json, sys, time
-    p = argparse.ArgumentParser(description="Simple Modbus/TCP runner (host:port supported)")
+    p = argparse.ArgumentParser(description="Simple Modbus/TCP runner (host:port supported, payload-free)")
     p.add_argument("--file", "-f", help="CSV/XLSX mapping file")
     p.add_argument("--timeout", type=float, default=3.0)
-    p.add_argument("--dry", action="store_true", help="Dry-run (don't actually write)")
+    p.add_argument("--dry", action="store_true")
     args = p.parse_args()
 
     if not args.file:
@@ -395,13 +441,11 @@ def main():
         for r in rows:
             res = perform_row(r, clients, timeout=args.timeout, dry=args.dry)
             print(_json.dumps({**r, **res}, ensure_ascii=False))
-            # tiny delay to be friendly
             time.sleep(0.02)
     finally:
         for c in list(clients.values()):
             try: c.close()
             except Exception: pass
-
 
 if __name__ == "__main__":
     main()
