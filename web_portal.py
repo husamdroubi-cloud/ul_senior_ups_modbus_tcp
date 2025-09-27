@@ -1,4 +1,4 @@
-# web_portal.py — Compact UI + wide Notes + Node Meta + Default Port + Auto-Read + Ping Device
+# web_portal.py — Compact UI + wide Notes + Node Meta + Default Port + Auto-Read + Ping Device + Auto-build tables
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,9 +40,9 @@ def _save_node_config(name: str, role: str) -> bool:
 app = FastAPI(title="Ultra-simple Modbus TCP Portal (Form Mode)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-cfg = _load_node_config()
-app.state.node_name = cfg["name"]
-app.state.node_role = cfg["role"]
+_cfg = _load_node_config()
+app.state.node_name = _cfg["name"]
+app.state.node_role = _cfg["role"]
 
 INDEX_HTML = r"""
 <!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -202,9 +202,7 @@ td input{width:100%}
   const escCsv=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
   const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  // localStorage keys
-  const LS_NAME='ups_node_name', LS_ROLE='ups_node_role', LS_AUTO='ups_auto_on', LS_AUTOS='ups_auto_secs', LS_PORT='ups_default_port';
-
+  // table builders
   function buildTable(table,base,rows,includeValue,includeDatatypeNotes=false){
     table.innerHTML='';
     const thead=document.createElement('thead');
@@ -228,11 +226,27 @@ td input{width:100%}
     table.appendChild(tbody);
   }
 
-  document.getElementById('coils-build').onclick=()=>{const inc=document.getElementById('coils-mode').value!=='read_coils';buildTable(document.getElementById('coils-table'),Number(document.getElementById('coils-base').value),Number(document.getElementById('coils-rows').value),inc,false);};
-  document.getElementById('discrete-build').onclick=()=>{buildTable(document.getElementById('discrete-table'),Number(document.getElementById('discrete-base').value),Number(document.getElementById('discrete-rows').value),false,false);};
-  document.getElementById('holding-build').onclick=()=>{const inc=document.getElementById('holding-mode').value!=='read_holding';buildTable(document.getElementById('holding-table'),Number(document.getElementById('holding-base').value),Number(document.getElementById('holding-rows').value),inc,true);};
-  document.getElementById('input-build').onclick=()=>{buildTable(document.getElementById('input-table'),Number(document.getElementById('input-base').value),Number(document.getElementById('input-rows').value),false,true);};
-  document.getElementById('coils-build').click();document.getElementById('discrete-build').click();document.getElementById('holding-build').click();document.getElementById('input-build').click();
+  const coilsBuild=()=>{const inc=document.getElementById('coils-mode').value!=='read_coils';buildTable(document.getElementById('coils-table'),Number(document.getElementById('coils-base').value),Number(document.getElementById('coils-rows').value),inc,false);};
+  const discreteBuild=()=>{buildTable(document.getElementById('discrete-table'),Number(document.getElementById('discrete-base').value),Number(document.getElementById('discrete-rows').value),false,false);};
+  const holdingBuild=()=>{const inc=document.getElementById('holding-mode').value!=='read_holding';buildTable(document.getElementById('holding-table'),Number(document.getElementById('holding-base').value),Number(document.getElementById('holding-rows').value),inc,true);};
+  const inputBuild=()=>{buildTable(document.getElementById('input-table'),Number(document.getElementById('input-base').value),Number(document.getElementById('input-rows').value),false,true);};
+
+  document.getElementById('coils-build').onclick=coilsBuild;
+  document.getElementById('discrete-build').onclick=discreteBuild;
+  document.getElementById('holding-build').onclick=holdingBuild;
+  document.getElementById('input-build').onclick=inputBuild;
+
+  // auto-build on load
+  coilsBuild(); discreteBuild(); holdingBuild(); inputBuild();
+
+  // auto-rebuild when controls change
+  function rebuildOnChange(ids, buildFn){
+    ids.forEach(id=>{const el=document.getElementById(id); if(el){ el.addEventListener('change', buildFn); }});
+  }
+  rebuildOnChange(['coils-rows','coils-base','coils-mode'], coilsBuild);
+  rebuildOnChange(['discrete-rows','discrete-base'], discreteBuild);
+  rebuildOnChange(['holding-rows','holding-base','holding-mode','holding-dt','holding-endian','holding-scale'], holdingBuild);
+  rebuildOnChange(['input-rows','input-base','input-dt','input-endian','input-scale'], inputBuild);
 
   function rowsFromTable(tableEl){
     const rows=[]; tableEl.querySelectorAll('tbody tr').forEach(tr=>{
@@ -305,6 +319,25 @@ td input{width:100%}
 
   // Build ops payload for /run
   function normalizeHostPort(raw, defPort){ if(!raw) return ''; return raw.includes(':')?raw:String(raw)+':'+String(defPort); }
+
+  function rowsFromTable(tableEl){
+    const rows=[]; tableEl.querySelectorAll('tbody tr').forEach(tr=>{
+      const tds=tr.querySelectorAll('td');
+      const ip=tds[1].querySelector('input')?.value??''; const unit=tds[2].querySelector('input')?.value??''; const addr=tds[3].querySelector('input')?.value??'';
+      let idx=4, value=''; if(tds[idx]&&tds[idx].querySelector('input')){value=tds[idx].querySelector('input').value; idx++;}
+      const notes=(tds[idx]&&tds[idx].querySelector('input'))?tds[idx].querySelector('input').value:'';
+      rows.push({ip:ip.trim(),unit_id:unit===''?'':Number(unit),address:addr===''?'':Number(addr),value:value??'',notes});
+    }); return rows;
+  }
+
+  function refToZeroBased(kind,addr){
+    if(addr===''||isNaN(addr)) return addr; const a=Number(addr);
+    if(kind==='coils')return a>=1?a-1:a;
+    if(kind==='discrete')return a>=10001?a-10001:a;
+    if(kind==='input')return a>=30001?a-30001:a;
+    if(kind==='holding')return a>=40001?a-40001:a;
+    return a;
+  }
 
   function buildOps(which){
     const def_ip=(ip_default.value||'').trim();
