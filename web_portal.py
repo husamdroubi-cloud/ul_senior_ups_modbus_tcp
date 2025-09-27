@@ -1,6 +1,9 @@
-# web_portal.py — Compact UI, wide Notes, standard Modbus reference defaults, 0-based normalization
-# Node Name & Role are user-controlled in the UI, persisted to JSON (with ENV fallback),
-# and re-applied from localStorage on page load. Pollable endpoints: /node and /node/name.
+# web_portal.py — Modbus TCP Portal (Form Mode)
+# - Compact UI + wide Notes
+# - Node Name & Role (Master/Slave) user-controlled; persisted to JSON (ENV fallback); localStorage reapply
+# - New: Global Port field (default 1502); per-row IP override respected; sends "host:port"
+# - New: Auto-Read toggle with interval (seconds)
+# - Pollable endpoints: /node (JSON), /node/name (plain)
 
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -78,7 +81,7 @@ td input{width:100%}
 
 /* Column sizing */
 .gridnum{width:5.5em}
-.ipcell{width:9em}
+.ipcell{width:11em}       /* a bit wider to allow host:port */
 .unitcell{width:4em}
 .valuecell{width:10em}
 .notescell{min-width:64em}
@@ -91,6 +94,7 @@ td input{width:100%}
 .tabbar button{padding:6px 10px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer}
 .tabbar button.active{background:#e8f0ff;border-color:#7aa2ff}
 .hidden{display:none}
+.badge{font-size:12px;padding:2px 6px;border:1px solid #ddd;border-radius:999px;margin-left:6px}
 </style></head><body>
 <header>
   <h2>Team 1 High Specification Smart UPS - UL/Braeden</h2>
@@ -107,16 +111,25 @@ td input{width:100%}
       </select>
     </label>
     <span class="muted">(polled at <code>/node</code> &amp; <code>/node/name</code>)</span>
+    <span id="cfgmode" class="badge"></span>
   </div>
   <div class="row">
     <label>Default Device/IP <input id="ip" placeholder="192.168.1.10"/></label>
+    <label>Port <input id="port" type="number" min="1" max="65535" value="1502"/></label>
     <label>Default Unit ID <input id="unit_id" type="number" min="0" max="247" value="1"/></label>
     <label>Timeout (s) <input id="timeout" type="number" step="0.1" min="0.1" value="3.0"/></label>
     <label><input id="dry" type="checkbox" checked/> Dry-run</label>
     <button id="save-meta">Save Node Meta</button>
     <span id="save-status" class="muted"></span>
   </div>
-  <div class="muted">Each row can override IP/Unit. Leave blank to use defaults above.</div>
+
+  <div class="row">
+    <label><input id="auto" type="checkbox"/> Auto-Read every</label>
+    <label><input id="auto_sec" type="number" step="0.1" min="0.2" value="2.0"/> s</label>
+    <span id="auto-status" class="muted"></span>
+  </div>
+
+  <div class="muted">Each row can override IP/Unit. You may also specify <code>host:port</code> in a row's IP override. The global Port applies if no per-row port is given.</div>
 </div>
 
 <div class="card">
@@ -216,9 +229,11 @@ td input{width:100%}
   const escCsv=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
   const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-  // === Local persistence keys for Node meta ===
+  // === Local persistence keys for Node meta & auto-read ===
   const LS_NAME='ups_node_name';
   const LS_ROLE='ups_node_role';
+  const LS_AUTO='ups_auto_enabled';
+  const LS_AUTO_SEC='ups_auto_interval_sec';
 
   // --- Build grid helper ---
   function buildTable(table,base,rows,includeValue,includeDatatypeNotes=false){
@@ -234,7 +249,7 @@ td input{width:100%}
     for(let i=0;i<rows;i++){
       const tr=document.createElement('tr');
       tr.innerHTML=`<td>${i+1}</td>
-        <td><input class="ipcell"></td>
+        <td><input class="ipcell" placeholder="e.g. 192.168.1.21 or 192.168.1.21:1502"></td>
         <td><input type="number" min="0" max="247" class="unitcell"></td>
         <td><input type="number" min="0" value="${base+i}" class="gridnum"></td>
         ${includeValue?'<td class="valuecell"><input></td>':''}
@@ -277,6 +292,7 @@ td input{width:100%}
 
   // --- Node meta: load from server, then override with localStorage and sync back ---
   async function loadNodeMeta(){
+    const badge=document.getElementById('cfgmode');
     try{
       const r=await fetch('/node');
       if(r.ok){
@@ -285,6 +301,11 @@ td input{width:100%}
         document.getElementById('node_role').value = j.role ?? 'Master';
       }
     }catch(_){}
+    // Env/file hint badge (best-effort; not security)
+    try {
+      const mode = (localStorage.getItem('CONFIG_MODE_HINT')||'').toLowerCase();
+      if(mode) badge.textContent = 'config: '+mode;
+    } catch(_) {}
 
     const rememberedName = localStorage.getItem(LS_NAME);
     const rememberedRole = localStorage.getItem(LS_ROLE);
@@ -292,7 +313,7 @@ td input{width:100%}
 
     if (rememberedName) {
       document.getElementById('node_name').value = rememberedName;
-      changed = True;
+      changed = true;
     }
     if (rememberedRole === 'Master' || rememberedRole === 'Slave') {
       document.getElementById('node_role').value = rememberedRole;
@@ -308,30 +329,33 @@ td input{width:100%}
           })});
       }catch(_){}
     }
+
+    // Restore auto-read state
+    const auto = localStorage.getItem(LS_AUTO)==='1';
+    const sec  = parseFloat(localStorage.getItem(LS_AUTO_SEC)||'2.0')||2.0;
+    document.getElementById('auto').checked = auto;
+    document.getElementById('auto_sec').value = sec.toFixed(1);
+    setupAutoRead();
   }
 
   async function saveNodeMeta(){
     const nn=document.getElementById('node_name').value.trim();
     const rl=document.getElementById('node_role').value;
     const s=document.getElementById('save-status');
-
-    // Persist in browser so the user’s choice is re-applied after any restart
     localStorage.setItem(LS_NAME, nn);
     localStorage.setItem(LS_ROLE, rl);
-
     try{
       const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nn,role:rl})});
       s.textContent = r.ok ? 'Saved' : 'Save failed';
     }catch(_){ s.textContent='Save failed'; }
     setTimeout(()=>s.textContent='',1500);
   }
-
   document.getElementById('save-meta').onclick = saveNodeMeta;
-  loadNodeMeta();
 
   // --- Build ops payload ---
   function buildOps(which){
-    const def_ip=document.getElementById('ip').value.trim();
+    const def_ip=(document.getElementById('ip').value||'').trim();
+    const def_port=parseInt(document.getElementById('port').value||'0',10)||0;
     const def_unit=Number(document.getElementById('unit_id').value);
     const timeout=Number(document.getElementById('timeout').value);
     const dry=document.getElementById('dry').checked;
@@ -339,20 +363,29 @@ td input{width:100%}
     const node_role=document.getElementById('node_role').value;
     const ops=[];
 
+    function withPort(ip){
+      if(!ip) return '';
+      if(ip.includes(':')) return ip;              // respect row override host:port
+      if(def_port>0) return ip+':'+def_port;       // add global port if provided
+      return ip;                                   // fall back to raw host (likely 502)
+    }
+
     const coilsMode=document.getElementById('coils-mode').value;
     rowsFromTable(document.getElementById('coils-table')).forEach(r=>{
       if(r.address==='')return;
       const addr0=refToZeroBased('coils',r.address);
       const isW=(coilsMode!=='read_coils');
       if((which==='read'&&isW)||(which==='write'&&!isW))return;
-      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      const ip = withPort(r.ip||def_ip);
+      const unit=(r.unit_id===''?def_unit:r.unit_id);
       ops.push({node_name,node_role,device:"COILS",ip,unit_id:unit,function:coilsMode,address:addr0,count:1,datatype:"bool",rw:isW?"W":"R",scale:1.0,endianness:"",value:isW?(coilsMode==='write_single'?(r.value||'0').trim():(r.value||'').trim()):"",notes:r.notes||""});
     });
 
     rowsFromTable(document.getElementById('discrete-table')).forEach(r=>{
       if(r.address===''||which==='write')return;
       const addr0=refToZeroBased('discrete',r.address);
-      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      const ip = withPort(r.ip||def_ip);
+      const unit=(r.unit_id===''?def_unit:r.unit_id);
       ops.push({node_name,node_role,device:"DISCRETE",ip,unit_id:unit,function:"read_discrete",address:addr0,count:1,datatype:"bool",rw:"R",scale:1.0,endianness:"",value:"",notes:r.notes||""});
     });
 
@@ -367,7 +400,8 @@ td input{width:100%}
       if(r.address==='')return;
       if((which==='read'&&hW)||(which==='write'&&!hW))return;
       const addr0=refToZeroBased('holding',r.address);
-      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      const ip = withPort(r.ip||def_ip);
+      const unit=(r.unit_id===''?def_unit:r.unit_id);
       ops.push({node_name,node_role,device:"HOLDING",ip,unit_id:unit,function:hMode,address:addr0,count:hCount,datatype:hDT,rw:hW?"W":"R",scale:hScale,endianness:hEnd,value:hW?(r.value||'').trim():"",notes:r.notes||""});
     });
 
@@ -379,7 +413,8 @@ td input{width:100%}
     rowsFromTable(document.getElementById('input-table')).forEach(r=>{
       if(r.address===''||which==='write')return;
       const addr0=refToZeroBased('input',r.address);
-      const ip=r.ip||def_ip; const unit=(r.unit_id===''?def_unit:r.unit_id);
+      const ip = withPort(r.ip||def_ip);
+      const unit=(r.unit_id===''?def_unit:r.unit_id);
       ops.push({node_name,node_role,device:"INPUT",ip,unit_id:unit,function:"read_input",address:addr0,count:iCount,datatype:iDT,rw:"R",scale:iScale,endianness:iEnd,value:"",notes:r.notes||""});
     });
 
@@ -416,6 +451,31 @@ td input{width:100%}
   }
   document.getElementById('read-btn').onclick=()=>postOps('read');
   document.getElementById('write-btn').onclick=()=>postOps('write');
+
+  // --- Auto-Read ---
+  let autoTimer=null;
+  function setupAutoRead(){
+    const cb=document.getElementById('auto');
+    const sec=parseFloat(document.getElementById('auto_sec').value||'2.0')||2.0;
+    const info=document.getElementById('auto-status');
+
+    if(autoTimer){ clearInterval(autoTimer); autoTimer=null; }
+    if(cb.checked){
+      autoTimer=setInterval(()=>document.getElementById('read-btn').click(), Math.max(200,sec*1000));
+      info.textContent='Auto-read running ('+sec.toFixed(1)+' s)';
+      localStorage.setItem(LS_AUTO,'1');
+      localStorage.setItem(LS_AUTO_SEC,String(sec));
+    }else{
+      info.textContent='Auto-read off';
+      localStorage.setItem(LS_AUTO,'0');
+      // keep last interval value in LS_AUTO_SEC
+    }
+  }
+  document.getElementById('auto').addEventListener('change',setupAutoRead);
+  document.getElementById('auto_sec').addEventListener('change',setupAutoRead);
+
+  // Init
+  loadNodeMeta();
 })();
 </script></body></html>
 """
@@ -464,37 +524,4 @@ async def run_mapping(request: Request):
     changed = False
     if maybe_name:
         app.state.node_name = maybe_name
-        changed = True
-    if maybe_role in ("Master", "Slave"):
-        app.state.node_role = maybe_role
-        changed = True
-    if changed:
-        _save_node_config(app.state.node_name, app.state.node_role)
-
-    if not isinstance(rows, list) or not rows:
-        raise HTTPException(status_code=400, detail="No rows provided")
-
-    clients: Dict[Tuple[str, float], ModbusTcpClient] = {}
-    results: List[Dict[str, Any]] = []
-
-    try:
-        for r in rows:
-            norm = {
-                "node_name": r.get("node_name", app.state.node_name),
-                "node_role": r.get("node_role", app.state.node_role),
-                "device": r.get("device", ""), "ip": r.get("ip", ""), "unit_id": r.get("unit_id", 1),
-                "function": r.get("function", ""), "address": r.get("address", 0), "count": r.get("count", 1),
-                "datatype": r.get("datatype", "int16"), "rw": r.get("rw", "R"), "scale": r.get("scale", 1.0),
-                "endianness": r.get("endianness", "ABCD"), "value": r.get("value", ""), "notes": r.get("notes", "")
-            }
-            res = perform_row(norm, clients, timeout=timeout, dry=dry)
-            results.append({**norm, **res})
-    finally:
-        for c in list(clients.values()):
-            try:
-                c.close()
-            except Exception:
-                pass
-
-    columns = sorted({k for r in results for k in r.keys()})
-    return {"columns": columns, "rows": results}
+       
